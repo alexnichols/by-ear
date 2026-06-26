@@ -67,23 +67,6 @@ func testDetectsMinorKeyFromRotatedChromaProfile() {
     expect(estimate?.mode == .minor, "A minor mode")
 }
 
-func testBuildsPythonModuleCommandForPianoStem() {
-    let input = URL(fileURLWithPath: "/Users/test/Music/song with spaces.mp3")
-    let outputRoot = URL(fileURLWithPath: "/tmp/transcribee-stems")
-    let python = URL(fileURLWithPath: "/usr/bin/python3")
-
-    let command = DemucsCommand.pythonModule(
-        python,
-        input: input,
-        outputRoot: outputRoot
-    )
-
-    expect(command.executableURL.path == "/usr/bin/python3", "python executable")
-    expect(Array(command.arguments.prefix(6)) == ["-m", "demucs", "-n", "htdemucs_6s", "--two-stems", "piano"], "piano command prefix")
-    expect(!command.arguments.contains("--other-method"), "compatible PyPI demucs command")
-    expect(command.expectedPianoStem.path == "/tmp/transcribee-stems/htdemucs_6s/song with spaces/piano.wav", "expected piano output")
-}
-
 func testBuildsMLXCommandForLocalKeysStem() {
     let input = URL(fileURLWithPath: "/Users/test/Music/song with spaces.mp3")
     let outputRoot = URL(fileURLWithPath: "/tmp/transcribee-mlx")
@@ -94,15 +77,44 @@ func testBuildsMLXCommandForLocalKeysStem() {
         executable,
         input: input,
         outputRoot: outputRoot,
-        modelRoot: modelRoot
+        modelRoot: modelRoot,
+        spec: .piano
     )
 
     expect(command.executableURL.path == "/opt/homebrew/bin/mlx-audio-separator", "mlx executable")
     expect(command.arguments.contains("BS-Roformer-SW.ckpt"), "mlx uses BS-Roformer-SW")
     expect(command.arguments.contains("--single_stem"), "mlx outputs a single stem")
     expect(command.arguments.contains("Piano"), "mlx targets piano stem")
+    expect(command.arguments.contains("--custom_output_names"), "mlx uses predictable output names")
+    expect(command.arguments.contains("{\"Piano\":\"piano\"}"), "mlx maps piano to stable output")
     expect(command.arguments.contains("latency_safe_v3"), "mlx uses stable fast path")
-    expect(command.expectedStem.path == "/tmp/transcribee-mlx/song with spaces_(piano)_BS-Roformer-SW.wav", "expected mlx output")
+    expect(command.expectedStem.path == "/tmp/transcribee-mlx/piano.wav", "expected mlx output")
+}
+
+func testPracticeStemSpecsUseMLXModels() {
+    let specs = MLXStemSpec.practiceSpecs
+
+    expect(specs.map(\.stem) == [.piano, .vocals, .bass, .drums], "practice specs expose core stems")
+    expect(specs.allSatisfy { !$0.modelFilename.localizedCaseInsensitiveContains("demucs") }, "practice specs avoid demucs")
+    expect(MLXStemSpec.vocals.modelFilename == "vocals_mel_band_roformer.ckpt", "vocals use top local MLX roformer")
+    expect(MLXStemSpec.bass.modelFilename == "kuielab_a_bass.onnx", "bass uses MLX MDX bass model")
+    expect(MLXStemSpec.drums.modelFilename == "kuielab_b_drums.onnx", "drums use MLX MDX drums model")
+}
+
+func testBuildsFFmpegStemMixCommand() {
+    let ffmpeg = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+    let inputs = [
+        URL(fileURLWithPath: "/tmp/stems/piano.wav"),
+        URL(fileURLWithPath: "/tmp/stems/bass.wav")
+    ]
+    let output = URL(fileURLWithPath: "/tmp/stems/selected-stems.wav")
+
+    let command = FFmpegStemMixCommand.amix(ffmpeg, inputs: inputs, output: output)
+
+    expect(command.executableURL == ffmpeg, "ffmpeg executable")
+    expect(command.arguments.filter { $0 == "-i" }.count == 2, "ffmpeg receives each selected stem")
+    expect(command.arguments.contains("amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,alimiter=limit=0.95"), "ffmpeg mixes selected stems")
+    expect(command.arguments.suffix(2) == ["-y", "/tmp/stems/selected-stems.wav"], "ffmpeg overwrites selected mix")
 }
 
 func testMVSepDigitalPianoRequestUsesDigitalPianoAlgorithm() {
@@ -213,8 +225,9 @@ testLoopRegionClampsTinySelections()
 testPracticeSpeedClamp()
 testDetectsMajorKeyFromChromaProfile()
 testDetectsMinorKeyFromRotatedChromaProfile()
-testBuildsPythonModuleCommandForPianoStem()
 testBuildsMLXCommandForLocalKeysStem()
+testPracticeStemSpecsUseMLXModels()
+testBuildsFFmpegStemMixCommand()
 testMVSepDigitalPianoRequestUsesDigitalPianoAlgorithm()
 testSlowPlaybackUsesHigherTimePitchOverlap()
 testRecentFilesDeduplicateNewestFirstAndCap()

@@ -1,8 +1,6 @@
 import Foundation
 
 public struct MLXSeparatorCommand: Equatable, Sendable {
-    public static let modelFilename = "BS-Roformer-SW.ckpt"
-    public static let targetStem = "Piano"
     public static let outputFormat = "WAV"
     public static let speedMode = "latency_safe_v3"
 
@@ -14,12 +12,13 @@ public struct MLXSeparatorCommand: Equatable, Sendable {
         _ executable: URL,
         input: URL,
         outputRoot: URL,
-        modelRoot: URL
+        modelRoot: URL,
+        spec: MLXStemSpec = .piano
     ) -> MLXSeparatorCommand {
         MLXSeparatorCommand(
             executableURL: executable,
-            arguments: separationArguments(input: input, outputRoot: outputRoot, modelRoot: modelRoot),
-            expectedStem: expectedStemPath(input: input, outputRoot: outputRoot)
+            arguments: separationArguments(input: input, outputRoot: outputRoot, modelRoot: modelRoot, spec: spec),
+            expectedStem: expectedStemPath(outputRoot: outputRoot, spec: spec)
         )
     }
 
@@ -27,21 +26,23 @@ public struct MLXSeparatorCommand: Equatable, Sendable {
         _ python: URL,
         input: URL,
         outputRoot: URL,
-        modelRoot: URL
+        modelRoot: URL,
+        spec: MLXStemSpec = .piano
     ) -> MLXSeparatorCommand {
         MLXSeparatorCommand(
             executableURL: python,
-            arguments: ["-m", "mlx_audio_separator"] + separationArguments(input: input, outputRoot: outputRoot, modelRoot: modelRoot),
-            expectedStem: expectedStemPath(input: input, outputRoot: outputRoot)
+            arguments: ["-m", "mlx_audio_separator"] + separationArguments(input: input, outputRoot: outputRoot, modelRoot: modelRoot, spec: spec),
+            expectedStem: expectedStemPath(outputRoot: outputRoot, spec: spec)
         )
     }
 
-    private static func separationArguments(input: URL, outputRoot: URL, modelRoot: URL) -> [String] {
+    private static func separationArguments(input: URL, outputRoot: URL, modelRoot: URL, spec: MLXStemSpec) -> [String] {
         [
             input.path,
-            "-m", modelFilename,
-            "--single_stem", targetStem,
+            "-m", spec.modelFilename,
+            "--single_stem", spec.targetStem,
             "--output_format", outputFormat,
+            "--custom_output_names", spec.customOutputNamesJSON,
             "--output_dir", outputRoot.path,
             "--model_file_dir", modelRoot.path,
             "--speed_mode", speedMode,
@@ -50,34 +51,7 @@ public struct MLXSeparatorCommand: Equatable, Sendable {
         ]
     }
 
-    private static func expectedStemPath(input: URL, outputRoot: URL) -> URL {
-        outputRoot.appendingPathComponent(expectedStemFileName(input: input), isDirectory: false)
-    }
-
-    private static func expectedStemFileName(input: URL) -> String {
-        let baseName = sanitize(input.deletingPathExtension().lastPathComponent)
-        let stem = sanitize(targetStem.lowercased())
-        let model = sanitize(String(modelFilename.split(separator: ".").first ?? Substring(modelFilename)))
-        return "\(baseName)_(\(stem))_\(model).\(outputFormat.lowercased())"
-    }
-
-    private static func sanitize(_ value: String) -> String {
-        var result = ""
-        var previousWasUnderscore = false
-        let disallowed = CharacterSet(charactersIn: #"<>:"/\|?*"#)
-
-        for scalar in value.unicodeScalars {
-            if disallowed.contains(scalar) {
-                if !previousWasUnderscore {
-                    result.append("_")
-                    previousWasUnderscore = true
-                }
-            } else {
-                result.append(String(scalar))
-                previousWasUnderscore = scalar == "_"
-            }
-        }
-
-        return result.trimmingCharacters(in: CharacterSet(charactersIn: "_. "))
+    private static func expectedStemPath(outputRoot: URL, spec: MLXStemSpec) -> URL {
+        outputRoot.appendingPathComponent(spec.expectedFileName, isDirectory: false)
     }
 }

@@ -1,6 +1,6 @@
 # By Ear
 
-Minimal macOS practice app for loading local audio, extracting keyboard stems, slowing down without pitch drift, looping sections, detecting key, and transposing to a target key.
+Minimal macOS practice app for loading local audio, separating practice stems, slowing down without pitch drift, looping sections, detecting key, and transposing to a target key.
 
 By Ear is local-first: source audio stays on your Mac unless you explicitly use the optional MVSep integration.
 
@@ -28,19 +28,24 @@ open "dist/By Ear.app"
 
 The app can open a YouTube link by using local `yt-dlp` and `ffmpeg`, converting the downloaded audio to MP3, and loading it into the practice view.
 
-## Stem Extraction
+## Stem Separation
 
-The app prefers local `mlx-audio-separator` on Apple Silicon with `BS-Roformer-SW.ckpt`, then falls back to local Demucs if MLX is unavailable. Install the local dependencies with:
-
-```bash
-./scripts/install-demucs.sh
-```
-
-The local MLX path runs:
+The app uses local `mlx-audio-separator` on Apple Silicon. Install the local dependencies with:
 
 ```bash
-mlx-audio-separator <audio> -m BS-Roformer-SW.ckpt --single_stem Piano --output_format WAV
+./scripts/install-local-ai.sh
 ```
+
+The local MLX path runs specialist models for each selectable stem:
+
+| Stem | MLX model |
+|---|---|
+| Piano | `BS-Roformer-SW.ckpt` |
+| Voice | `vocals_mel_band_roformer.ckpt` |
+| Bass | `kuielab_a_bass.onnx` |
+| Drums | `kuielab_b_drums.onnx` |
+
+After processing, choose any generated stems with the checkboxes and click Use to load that mix. Unsaved generated WAVs are stored under Application Support and deleted when discarded, replaced, or when the app closes.
 
 The optional MVSep Digital Piano button uploads to MVSep with a user-provided API token and uses separation type `79`.
 

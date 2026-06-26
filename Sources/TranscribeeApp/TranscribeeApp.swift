@@ -233,10 +233,45 @@ private struct ContentView: View {
 
     private var contextualActions: some View {
         HStack(spacing: 10) {
-            if model.canSaveGeneratedStem {
-                Label("Piano stem ready", systemImage: "checkmark.circle")
+            if !model.generatedStemOptions.isEmpty {
+                Label("Stems", systemImage: "slider.horizontal.3")
                     .foregroundStyle(.secondary)
 
+                ForEach($model.generatedStemOptions) { $option in
+                    Toggle(option.stem.displayName, isOn: $option.isIncluded)
+                        .toggleStyle(.checkbox)
+                }
+
+                Button {
+                    model.applySelectedStemMix()
+                } label: {
+                    Label(model.isMixingStems ? "Mixing..." : "Use", systemImage: "checkmark")
+                }
+                .disabled(model.isStemWorkRunning || !model.hasSelectedGeneratedStems)
+
+                stemSaveButtons
+            } else if model.canSaveGeneratedStem {
+                Label("Stem mix ready", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+
+                stemSaveButtons
+            } else if model.currentSourceURL != nil {
+                Button {
+                    model.separatePracticeStems()
+                } label: {
+                    Label(model.isIsolating ? "Separating..." : "Separate Stems", systemImage: "waveform.badge.magnifyingglass")
+                }
+                .disabled(model.isStemWorkRunning)
+            }
+
+            Spacer()
+        }
+        .frame(minHeight: 32)
+    }
+
+    private var stemSaveButtons: some View {
+        Group {
+            if model.canSaveGeneratedStem {
                 Button {
                     model.saveGeneratedStem()
                 } label: {
@@ -249,18 +284,8 @@ private struct ContentView: View {
                 } label: {
                     Label("Discard", systemImage: "trash")
                 }
-            } else if model.currentSourceURL != nil {
-                Button {
-                    model.isolatePiano()
-                } label: {
-                    Label(model.isIsolating ? "Extracting..." : "Extract Piano", systemImage: "pianokeys")
-                }
-                .disabled(model.isStemWorkRunning)
             }
-
-            Spacer()
         }
-        .frame(minHeight: 32)
     }
 
     private var transport: some View {
@@ -425,7 +450,7 @@ private struct ContentView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
-                Label("Extraction", systemImage: "pianokeys")
+                Label("Separation", systemImage: "pianokeys")
 
                 HStack(spacing: 10) {
                     Button {
@@ -632,6 +657,21 @@ private struct WaveformView: View {
     }
 }
 
+private struct GeneratedStemOption: Identifiable, Equatable {
+    let stem: PracticeStem
+    let url: URL
+    var isIncluded: Bool
+
+    var id: PracticeStem {
+        stem
+    }
+}
+
+private struct ExtractedPracticeStem: Equatable {
+    let stem: PracticeStem
+    let url: URL
+}
+
 @MainActor
 private final class PracticePlayerModel: ObservableObject {
     @Published var loadedFileName = "No audio loaded"
@@ -644,14 +684,15 @@ private final class PracticePlayerModel: ObservableObject {
     @Published var detectedKey: MusicalKey?
     @Published var targetRoot: PitchClass?
     @Published var loopRegion: LoopRegion?
-    @Published var isInstallingDemucs = false
     @Published var isInstallingSeparators = false
     @Published var isIsolating = false
+    @Published var isMixingStems = false
     @Published var isRunningMVSep = false
     @Published var isDownloadingYouTube = false
     @Published var recentAudioItems: [RecentFileEntry] = []
     @Published var canSaveGeneratedStem = false
     @Published var hasAudio = false
+    @Published var generatedStemOptions: [GeneratedStemOption] = []
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
@@ -672,7 +713,11 @@ private final class PracticePlayerModel: ObservableObject {
     }
 
     var isStemWorkRunning: Bool {
-        isIsolating || isRunningMVSep
+        isIsolating || isMixingStems || isRunningMVSep
+    }
+
+    var hasSelectedGeneratedStems: Bool {
+        generatedStemOptions.contains { $0.isIncluded }
     }
 
     var detectedKeyText: String {
@@ -720,6 +765,7 @@ private final class PracticePlayerModel: ObservableObject {
         updateGeneratedSaveState()
 
         if loadAudio(url, preserveOriginalSource: false, addToRecents: true) {
+            generatedStemOptions = []
             removeGeneratedFile(previousGeneratedURL)
             return true
         } else if let previousGeneratedURL {
@@ -927,30 +973,81 @@ private final class PracticePlayerModel: ObservableObject {
         }
     }
 
-    func isolatePiano() {
+    func separatePracticeStems() {
         guard !isIsolating else {
             return
         }
         guard let input = originalAudioURL else {
-            statusText = "Open an audio file before isolating piano."
+            statusText = "Open an audio file before separating stems."
             return
         }
         isIsolating = true
-        statusText = "Running local keys extraction..."
+        generatedStemOptions = []
+        statusText = "Separating stems with MLX..."
 
         Task {
             do {
-                let stemURL = try await extractLocalKeysStem(from: input)
-                isIsolating = false
-                if loadAudio(stemURL, preserveOriginalSource: true, addToRecents: false) {
-                    trackUnsavedGenerated(stemURL)
-                    statusText = "Loaded extracted keys stem. Save it to keep the WAV."
-                } else {
-                    removeGeneratedFile(stemURL)
+                let stems = try await extractLocalPracticeStems(from: input) { [weak self] message in
+                    Task { @MainActor in
+                        self?.statusText = message
+                    }
                 }
+                isIsolating = false
+
+                generatedStemOptions = stems.map { stem in
+                    GeneratedStemOption(stem: stem.stem, url: stem.url, isIncluded: stem.stem == .piano)
+                }
+                if !generatedStemOptions.contains(where: { $0.isIncluded }),
+                   !generatedStemOptions.isEmpty {
+                    generatedStemOptions[0].isIncluded = true
+                }
+
+                applySelectedStemMix()
             } catch {
                 isIsolating = false
-                statusText = "Keys extraction failed: \(error.localizedDescription)"
+                statusText = "Stem separation failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func applySelectedStemMix() {
+        guard !isMixingStems else {
+            return
+        }
+
+        let selectedOptions = generatedStemOptions.filter { $0.isIncluded }
+        guard !selectedOptions.isEmpty else {
+            statusText = "Choose at least one stem."
+            return
+        }
+
+        let outputDirectory = generatedJobDirectory(containing: selectedOptions[0].url)
+            ?? selectedOptions[0].url.deletingLastPathComponent()
+        let outputURL = outputDirectory.appendingPathComponent("selected-stems.wav", isDirectory: false)
+        let selectedURLs = selectedOptions.map(\.url)
+        let selectedLabel = selectedOptions.map { $0.stem.displayName }.joined(separator: " + ")
+
+        isMixingStems = true
+        statusText = selectedOptions.count == 1 ? "Loading \(selectedLabel)..." : "Mixing \(selectedLabel)..."
+        pause()
+        engine.stop()
+        engine.reset()
+        playbackFile = nil
+
+        Task {
+            do {
+                try await createSelectedStemMix(from: selectedURLs, output: outputURL)
+                isMixingStems = false
+
+                if loadAudio(outputURL, preserveOriginalSource: true, addToRecents: false) {
+                    trackUnsavedGenerated(outputURL)
+                    statusText = "Loaded \(selectedLabel). Save it to keep the WAV."
+                } else {
+                    removeGeneratedFile(outputURL)
+                }
+            } catch {
+                isMixingStems = false
+                statusText = "Could not mix stems: \(error.localizedDescription)"
             }
         }
     }
@@ -987,6 +1084,7 @@ private final class PracticePlayerModel: ObservableObject {
                     }
                 }
                 isRunningMVSep = false
+                generatedStemOptions = []
                 if loadAudio(stemURL, preserveOriginalSource: true, addToRecents: false) {
                     trackUnsavedGenerated(stemURL)
                     statusText = "Loaded MVSep digital piano stem. Save it to keep the WAV."
@@ -1021,6 +1119,7 @@ private final class PracticePlayerModel: ObservableObject {
             try copyGeneratedStem(from: sourceURL, to: destinationURL)
             let temporaryURL = generatedRetention.markSaved()
             updateGeneratedSaveState()
+            generatedStemOptions = []
             removeGeneratedFile(temporaryURL, preserving: destinationURL)
 
             if loadAudio(destinationURL, preserveOriginalSource: true, addToRecents: true) {
@@ -1034,6 +1133,7 @@ private final class PracticePlayerModel: ObservableObject {
     func discardUnsavedGeneratedStem() {
         let discardableURL = generatedRetention.takeDiscardableURL()
         updateGeneratedSaveState()
+        generatedStemOptions = []
         removeGeneratedFile(discardableURL)
     }
 
@@ -1047,7 +1147,7 @@ private final class PracticePlayerModel: ObservableObject {
 
         if displayedAudioURL?.standardizedFileURL.path != sourceURL.standardizedFileURL.path,
            loadAudio(sourceURL, preserveOriginalSource: false, addToRecents: false) {
-            statusText = "Discarded piano stem."
+            statusText = "Discarded stem mix."
         }
     }
 
@@ -1153,18 +1253,9 @@ private final class PracticePlayerModel: ObservableObject {
         min(max(0, time), max(0, duration))
     }
 
-    private var demucsVenvURL: URL {
-        appSupportURL
-            .appendingPathComponent("demucs-venv", isDirectory: true)
-    }
-
     private var localSeparatorVenvURL: URL {
         appSupportURL
             .appendingPathComponent("local-separators-venv", isDirectory: true)
-    }
-
-    private var demucsOutputRootURL: URL {
-        appSupportURL.appendingPathComponent("Stems", isDirectory: true)
     }
 
     private var mlxOutputRootURL: URL {
@@ -1188,70 +1279,68 @@ private final class PracticePlayerModel: ObservableObject {
             .appendingPathComponent("Transcribee", isDirectory: true)
     }
 
-    private func extractLocalKeysStem(from input: URL) async throws -> URL {
+    private func extractLocalPracticeStems(
+        from input: URL,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> [ExtractedPracticeStem] {
         let mlxJobRootURL = generatedJobRootURL(under: mlxOutputRootURL)
-        if let command = mlxCommand(input: input, outputRoot: mlxJobRootURL) {
-            try FileManager.default.createDirectory(at: mlxJobRootURL, withIntermediateDirectories: true)
-            try FileManager.default.createDirectory(at: mlxModelRootURL, withIntermediateDirectories: true)
-            _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+        guard mlxCommand(input: input, outputRoot: mlxJobRootURL, spec: .piano) != nil else {
+            throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator on PATH.")
+        }
 
-            if FileManager.default.fileExists(atPath: command.expectedStem.path) {
-                return command.expectedStem
+        try FileManager.default.createDirectory(at: mlxJobRootURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: mlxModelRootURL, withIntermediateDirectories: true)
+
+        var extractedStems: [ExtractedPracticeStem] = []
+        var failures: [String] = []
+
+        for spec in MLXStemSpec.practiceSpecs {
+            guard let command = mlxCommand(input: input, outputRoot: mlxJobRootURL, spec: spec) else {
+                throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator on PATH.")
             }
 
-            if let discovered = findStem(in: mlxJobRootURL, matching: ["(Piano)", "piano"]) {
-                return discovered
+            progress("MLX: \(spec.stem.displayName)...")
+
+            do {
+                _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+
+                if FileManager.default.fileExists(atPath: command.expectedStem.path) {
+                    extractedStems.append(ExtractedPracticeStem(stem: spec.stem, url: command.expectedStem))
+                    continue
+                }
+
+                if let discovered = findStem(in: mlxJobRootURL, matching: [spec.expectedFileName, "(\(spec.targetStem))", spec.targetStem]) {
+                    extractedStems.append(ExtractedPracticeStem(stem: spec.stem, url: discovered))
+                    continue
+                }
+
+                failures.append("\(spec.stem.displayName): no output")
+            } catch {
+                failures.append("\(spec.stem.displayName): \(error.localizedDescription)")
             }
-
-            throw AppProcessError.failed("MLX finished but did not create \(command.expectedStem.path)")
         }
 
-        let demucsJobRootURL = generatedJobRootURL(under: demucsOutputRootURL)
-        guard let command = demucsCommand(input: input, outputRoot: demucsJobRootURL) else {
-            throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator or demucs on PATH.")
+        guard !extractedStems.isEmpty else {
+            let detail = failures.isEmpty ? "No stems were created." : failures.joined(separator: "; ")
+            throw AppProcessError.failed(detail)
         }
 
-        try FileManager.default.createDirectory(at: demucsJobRootURL, withIntermediateDirectories: true)
-        _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
-
-        guard FileManager.default.fileExists(atPath: command.expectedPianoStem.path) else {
-            throw AppProcessError.failed("Demucs finished but did not create \(command.expectedPianoStem.path)")
-        }
-
-        return command.expectedPianoStem
+        return extractedStems
     }
 
-    private func mlxCommand(input: URL, outputRoot: URL) -> MLXSeparatorCommand? {
+    private func mlxCommand(input: URL, outputRoot: URL, spec: MLXStemSpec) -> MLXSeparatorCommand? {
         let venvExecutable = localSeparatorVenvURL.appendingPathComponent("bin/mlx-audio-separator")
         if FileManager.default.isExecutableFile(atPath: venvExecutable.path) {
-            return .executable(venvExecutable, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
+            return .executable(venvExecutable, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL, spec: spec)
         }
 
         let venvPython = localSeparatorVenvURL.appendingPathComponent("bin/python")
         if FileManager.default.isExecutableFile(atPath: venvPython.path) {
-            return .pythonModule(venvPython, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
+            return .pythonModule(venvPython, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL, spec: spec)
         }
 
         if let mlx = ProcessRunner.findExecutable("mlx-audio-separator") {
-            return .executable(mlx, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
-        }
-
-        return nil
-    }
-
-    private func demucsCommand(input: URL, outputRoot: URL) -> DemucsCommand? {
-        let venvDemucs = demucsVenvURL.appendingPathComponent("bin/demucs")
-        if FileManager.default.isExecutableFile(atPath: venvDemucs.path) {
-            return .executable(venvDemucs, input: input, outputRoot: outputRoot)
-        }
-
-        let venvPython = demucsVenvURL.appendingPathComponent("bin/python")
-        if FileManager.default.isExecutableFile(atPath: venvPython.path) {
-            return .pythonModule(venvPython, input: input, outputRoot: outputRoot)
-        }
-
-        if let demucs = ProcessRunner.findExecutable("demucs") {
-            return .executable(demucs, input: input, outputRoot: outputRoot)
+            return .executable(mlx, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL, spec: spec)
         }
 
         return nil
@@ -1323,7 +1412,38 @@ private final class PracticePlayerModel: ObservableObject {
     private func trackUnsavedGenerated(_ url: URL) {
         let previousURL = generatedRetention.trackUnsaved(url)
         updateGeneratedSaveState()
-        removeGeneratedFile(previousURL)
+        removeGeneratedFile(previousURL, preserving: url)
+    }
+
+    private func createSelectedStemMix(from inputs: [URL], output: URL) async throws {
+        guard !inputs.isEmpty else {
+            throw AppProcessError.failed("Choose at least one stem.")
+        }
+
+        try FileManager.default.createDirectory(
+            at: output.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        if FileManager.default.fileExists(atPath: output.path) {
+            try FileManager.default.removeItem(at: output)
+        }
+
+        if inputs.count == 1 {
+            try FileManager.default.copyItem(at: inputs[0], to: output)
+            return
+        }
+
+        guard let ffmpeg = ProcessRunner.findExecutable("ffmpeg") else {
+            throw AppProcessError.failed("Install ffmpeg first, or put ffmpeg on PATH.")
+        }
+
+        let command = FFmpegStemMixCommand.amix(ffmpeg, inputs: inputs, output: output)
+        _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+
+        guard FileManager.default.fileExists(atPath: output.path) else {
+            throw AppProcessError.failed("ffmpeg finished but did not create \(output.path)")
+        }
     }
 
     private func updateGeneratedSaveState() {
@@ -1378,7 +1498,6 @@ private final class PracticePlayerModel: ObservableObject {
     private func generatedJobDirectory(containing url: URL) -> URL? {
         let standardizedURL = url.standardizedFileURL
         let generatedRoots = [
-            demucsOutputRootURL.standardizedFileURL,
             mlxOutputRootURL.standardizedFileURL,
             mvsepOutputRootURL.standardizedFileURL
         ]
@@ -1504,35 +1623,6 @@ private struct AudioAnalysis {
         }
 
         return AudioAnalysis(peaks: peaks, monoSamples: monoSamples, sampleRate: sampleRate, duration: duration)
-    }
-}
-
-private enum DemucsInstaller {
-    static func install(into venvURL: URL) async throws {
-        if let uv = ProcessRunner.findExecutable("uv") {
-            try await installWithUV(uv, venvURL: venvURL)
-            return
-        }
-
-        guard let python = ProcessRunner.findExecutable("python3.11") ?? ProcessRunner.findExecutable("python3.12") else {
-            throw AppProcessError.failed("Could not find uv, python3.11, or python3.12 on PATH.")
-        }
-
-        try await ProcessRunner.run(python, arguments: ["-m", "venv", venvURL.path])
-        let venvPython = venvURL.appendingPathComponent("bin/python")
-        try await ProcessRunner.run(venvPython, arguments: ["-m", "pip", "install", "--upgrade", "pip"])
-        try await ProcessRunner.run(venvPython, arguments: ["-m", "pip", "install", "demucs", "torchcodec"])
-    }
-
-    private static func installWithUV(_ uv: URL, venvURL: URL) async throws {
-        do {
-            try await ProcessRunner.run(uv, arguments: ["venv", "--allow-existing", "--python", "3.11", venvURL.path])
-        } catch {
-            try await ProcessRunner.run(uv, arguments: ["venv", "--allow-existing", "--python", "3.12", venvURL.path])
-        }
-
-        let venvPython = venvURL.appendingPathComponent("bin/python")
-        try await ProcessRunner.run(uv, arguments: ["pip", "install", "--python", venvPython.path, "demucs", "torchcodec"])
     }
 }
 
