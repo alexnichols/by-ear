@@ -29,7 +29,7 @@ flowchart LR
 | `tmp/repshed/README.md` | Repshed exposes A-B loop, 0.1x-2x pitch-preserved speed, waveform, fine adjust, keyboard shortcuts. | Match the fast practice workflow and shortcut muscle memory. |
 | `tmp/repshed/js/tune.js` | Shortcuts are Space, arrows, `[`, `]`, `L`, `-`, `+`. | Implement the same core keys in the macOS app. |
 | `tmp/demucs/README.md` | `htdemucs_6s` adds `piano` and `guitar`; README warns piano quality is imperfect. | Use it as the free local path, with honest status copy. |
-| `tmp/demucs/demucs/separate.py` | `--two-stems STEM` validates against the selected model sources. | Run `htdemucs_6s --two-stems piano --other-method none`. |
+| `tmp/demucs/demucs/separate.py` and installed PyPI Demucs 4.0.1 | `--two-stems STEM` validates against the selected model sources; PyPI 4.0.1 does not expose `--other-method`. | Run `htdemucs_6s --two-stems piano` and load only `piano.wav`. |
 | Official Modal pricing page, checked 2026-06-26 | Starter plan advertises $30/month free credits. | Modal remains a later optional accelerator, not required for v1. |
 
 ## Approaches

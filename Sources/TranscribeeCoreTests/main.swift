@@ -80,8 +80,7 @@ func testBuildsPythonModuleCommandForPianoStem() {
 
     expect(command.executableURL.path == "/usr/bin/python3", "python executable")
     expect(Array(command.arguments.prefix(6)) == ["-m", "demucs", "-n", "htdemucs_6s", "--two-stems", "piano"], "piano command prefix")
-    expect(command.arguments.contains("--other-method"), "other method arg")
-    expect(command.arguments.contains("none"), "no no_piano output")
+    expect(!command.arguments.contains("--other-method"), "compatible PyPI demucs command")
     expect(command.expectedPianoStem.path == "/tmp/transcribee-stems/htdemucs_6s/song with spaces/piano.wav", "expected piano output")
 }
 

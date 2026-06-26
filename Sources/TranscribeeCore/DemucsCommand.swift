@@ -40,7 +40,6 @@ public struct DemucsCommand: Equatable, Sendable {
         [
             "-n", modelName,
             "--two-stems", targetStem,
-            "--other-method", "none",
             "--float32",
             "--segment", "7",
             "-o", outputRoot.path,
@@ -55,4 +54,3 @@ public struct DemucsCommand: Equatable, Sendable {
             .appendingPathComponent("\(targetStem).wav", isDirectory: false)
     }
 }
-

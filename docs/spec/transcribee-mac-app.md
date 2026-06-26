@@ -20,7 +20,7 @@ Ship a working minimalist macOS practice app for local audio files. Users can lo
 - [ ] Users can create, adjust, enable, disable, and clear an A-B loop from the waveform.
 - [ ] Keyboard shortcuts cover Space, arrows, `[`, `]`, `L`, `-`, and `+`.
 - [ ] Key detection returns C major and A minor for chroma fixtures, returns a displayed estimate or Unknown for decoded audio, and target-key transpose updates pitch cents.
-- [ ] Piano isolation runs local Demucs with `-n htdemucs_6s --two-stems piano --other-method none` when installed and can install a local Demucs virtualenv.
+- [ ] Piano isolation runs local Demucs with `-n htdemucs_6s --two-stems piano` when installed, loads `piano.wav`, and can install a local Demucs virtualenv.
 - [ ] Unit tests cover musical key math, loop validation, key-profile detection, and Demucs command construction.
 
 ## Approach
@@ -31,8 +31,8 @@ Native SwiftUI + AVFoundation + local Demucs CLI — see `docs/design/transcribe
 
 | # | Checkpoint | Files/areas | Agent | Est. files | Verifies |
 |---|---|---|---|---:|---|
-| 1 | Musical domain, loop, and speed core | `Sources/TranscribeeCore`, `Tests/TranscribeeCoreTests` | atomic-implementer (mode: feature) | ~4 | `swift test --filter MusicalKeyTests`, `swift test --filter LoopRegionTests` |
-| 2 | Key detection and Demucs command core | `Sources/TranscribeeCore`, `Tests/TranscribeeCoreTests` | atomic-implementer (mode: feature) | ~4 | `swift test --filter KeyDetectorTests`, `swift test --filter DemucsCommandTests` |
+| 1 | Musical domain, loop, and speed core | `Sources/TranscribeeCore`, `Sources/TranscribeeCoreTests` | atomic-implementer (mode: feature) | ~4 | `swift run TranscribeeCoreTests` |
+| 2 | Key detection and Demucs command core | `Sources/TranscribeeCore`, `Sources/TranscribeeCoreTests` | atomic-implementer (mode: feature) | ~4 | `swift run TranscribeeCoreTests`, Demucs smoke command on a generated WAV |
 | 3 | Native app playback surface | `Sources/TranscribeeApp` | atomic-implementer (mode: feature) | ~6 | `swift build`, app launches, load/drop/play/loop/shortcut paths compile against the controller |
 | 4 | Packaging and setup scripts | `scripts`, `README.md` | atomic-implementer (mode: surgical) | ~3 | release bundle exists, executable is ad-hoc signed, setup script dry path is documented |
 
