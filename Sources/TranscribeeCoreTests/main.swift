@@ -149,20 +149,15 @@ func testRecentFilesDeduplicateNewestFirstAndCap() {
     expect(!recents.entries.contains { $0.url.path == "/Users/test/song-0.wav" }, "oldest item dropped")
 }
 
-func testGeneratedAudioRetentionDeletesOnlyUnsavedFiles() {
-    let stem = URL(fileURLWithPath: "/tmp/transcribee/generated.wav")
-    var retention = GeneratedAudioRetention()
+func testStemCacheKeyIsStableForSourcePath() {
+    let first = StemCacheKey(sourceURL: URL(fileURLWithPath: "/Users/test/Music/Rose Lesson.wav"))
+    let same = StemCacheKey(sourceURL: URL(fileURLWithPath: "/Users/test/Music/Rose Lesson.wav"))
+    let different = StemCacheKey(sourceURL: URL(fileURLWithPath: "/Users/test/Music/Other Lesson.wav"))
 
-    expect(!retention.canSave, "no generated file starts unsavable")
-    expect(retention.trackUnsaved(stem) == nil, "first generated file has no replacement")
-    expect(retention.canSave, "unsaved generated file can be saved")
-    expect(retention.takeDiscardableURL() == stem, "unsaved file is discardable")
-    expect(!retention.canSave, "discard clears save state")
-
-    _ = retention.trackUnsaved(stem)
-    expect(retention.markSaved() == stem, "saved file is returned for cleanup after copy")
-    expect(!retention.canSave, "saved generated file no longer needs saving")
-    expect(retention.takeDiscardableURL() == nil, "saved file is not later discarded")
+    expect(first.directoryName == same.directoryName, "same source path reuses stem cache")
+    expect(first.directoryName != different.directoryName, "different source path gets different stem cache")
+    expect(first.directoryName.hasPrefix("Rose Lesson-"), "cache name keeps readable song base")
+    expect(!first.directoryName.contains("/"), "cache name is path safe")
 }
 
 func testBuildsYTDLPCommandForYouTubeMP3Download() {
@@ -235,7 +230,7 @@ testBuildsFFmpegStemMixCommand()
 testMVSepDigitalPianoRequestUsesDigitalPianoAlgorithm()
 testSlowPlaybackUsesHigherTimePitchOverlap()
 testRecentFilesDeduplicateNewestFirstAndCap()
-testGeneratedAudioRetentionDeletesOnlyUnsavedFiles()
+testStemCacheKeyIsStableForSourcePath()
 testBuildsYTDLPCommandForYouTubeMP3Download()
 testPracticeSurfaceCopyUsesPlainMusicianLanguage()
 testPracticeWindowLayoutStartsCompactAndExpandsForAudio()

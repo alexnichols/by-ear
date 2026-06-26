@@ -65,12 +65,6 @@ private struct ContentView: View {
         .onReceive(Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()) { _ in
             model.tickPlayback()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-            model.discardUnsavedGeneratedStem()
-        }
-        .onDisappear {
-            model.discardUnsavedGeneratedStem()
-        }
         .onChange(of: model.hasAudio) { _, hasAudio in
             resizeWindow(hasAudio: hasAudio)
         }
@@ -101,7 +95,7 @@ private struct ContentView: View {
                 .frame(minHeight: 210)
                 .padding(.top, 8)
 
-                if model.currentSourceURL != nil || model.canSaveGeneratedStem {
+                if model.currentSourceURL != nil || !model.generatedStemOptions.isEmpty {
                     contextualActions
                 }
 
@@ -237,24 +231,21 @@ private struct ContentView: View {
                 Label("Stems", systemImage: "slider.horizontal.3")
                     .foregroundStyle(.secondary)
 
-                ForEach($model.generatedStemOptions) { $option in
-                    Toggle(option.stem.displayName, isOn: $option.isIncluded)
+                ForEach(model.generatedStemOptions) { option in
+                    Toggle(
+                        option.stem.displayName,
+                        isOn: Binding(
+                            get: { model.isStemIncluded(option.stem) },
+                            set: { model.setStem(option.stem, included: $0) }
+                        )
+                    )
                         .toggleStyle(.checkbox)
                 }
 
-                Button {
-                    model.applySelectedStemMix()
-                } label: {
-                    Label(model.isMixingStems ? "Mixing..." : "Use", systemImage: "checkmark")
+                if model.isMixingStems {
+                    ProgressView()
+                        .controlSize(.small)
                 }
-                .disabled(model.isStemWorkRunning || !model.hasSelectedGeneratedStems)
-
-                stemSaveButtons
-            } else if model.canSaveGeneratedStem {
-                Label("Stem mix ready", systemImage: "checkmark.circle")
-                    .foregroundStyle(.secondary)
-
-                stemSaveButtons
             } else if model.currentSourceURL != nil {
                 Button {
                     model.separatePracticeStems()
@@ -267,25 +258,6 @@ private struct ContentView: View {
             Spacer()
         }
         .frame(minHeight: 32)
-    }
-
-    private var stemSaveButtons: some View {
-        Group {
-            if model.canSaveGeneratedStem {
-                Button {
-                    model.saveGeneratedStem()
-                } label: {
-                    Label("Save", systemImage: "square.and.arrow.down")
-                }
-                .keyboardShortcut("s", modifiers: [.command])
-
-                Button(role: .destructive) {
-                    model.discardGeneratedStemAndRestoreSource()
-                } label: {
-                    Label("Discard", systemImage: "trash")
-                }
-            }
-        }
     }
 
     private var transport: some View {
@@ -673,6 +645,10 @@ private struct ExtractedPracticeStem: Equatable {
     let url: URL
 }
 
+private struct CachedStemSelection: Codable, Equatable {
+    let includedStems: [PracticeStem]
+}
+
 @MainActor
 private final class PracticePlayerModel: ObservableObject {
     @Published var loadedFileName = "No audio loaded"
@@ -691,7 +667,6 @@ private final class PracticePlayerModel: ObservableObject {
     @Published var isRunningMVSep = false
     @Published var isDownloadingYouTube = false
     @Published var recentAudioItems: [RecentFileEntry] = []
-    @Published var canSaveGeneratedStem = false
     @Published var hasAudio = false
     @Published var generatedStemOptions: [GeneratedStemOption] = []
 
@@ -699,6 +674,7 @@ private final class PracticePlayerModel: ObservableObject {
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private let recentFilesDefaultsKey = "recentAudioFiles.v1"
+    private let stemSelectionFileName = "selection.json"
     private var playbackFile: AVAudioFile?
     private var playbackSampleRate = 44_100.0
     private var playbackAnchorTime = 0.0
@@ -707,7 +683,7 @@ private final class PracticePlayerModel: ObservableObject {
     private var displayedAudioURL: URL?
     private var pendingLoopStart: Double?
     private var recentFiles = RecentFilesList()
-    private var generatedRetention = GeneratedAudioRetention()
+    private var pendingStemMixRequest = false
 
     var currentSourceURL: URL? {
         originalAudioURL
@@ -762,16 +738,11 @@ private final class PracticePlayerModel: ObservableObject {
 
     @discardableResult
     func load(_ url: URL) -> Bool {
-        let previousGeneratedURL = generatedRetention.takeDiscardableURL()
-        updateGeneratedSaveState()
-
         if loadAudio(url, preserveOriginalSource: false, addToRecents: true) {
             generatedStemOptions = []
-            removeGeneratedFile(previousGeneratedURL)
+            restoreCachedStemOptions(for: url, autoLoad: true)
+            pruneStemCachesToRecents()
             return true
-        } else if let previousGeneratedURL {
-            _ = generatedRetention.trackUnsaved(previousGeneratedURL)
-            updateGeneratedSaveState()
         }
 
         return false
@@ -788,9 +759,17 @@ private final class PracticePlayerModel: ObservableObject {
     }
 
     func clearRecents() {
+        let sourceURL = originalAudioURL
         recentFiles = RecentFilesList()
         recentAudioItems = []
         UserDefaults.standard.removeObject(forKey: recentFilesDefaultsKey)
+        generatedStemOptions = []
+        removeAllStemCaches()
+
+        if let sourceURL,
+           displayedAudioURL?.standardizedFileURL.path != sourceURL.standardizedFileURL.path {
+            _ = loadAudio(sourceURL, preserveOriginalSource: false, addToRecents: false)
+        }
     }
 
     func downloadYouTubeAudio(_ rawURLString: String) {
@@ -995,14 +974,7 @@ private final class PracticePlayerModel: ObservableObject {
                 }
                 isIsolating = false
 
-                generatedStemOptions = stems.map { stem in
-                    GeneratedStemOption(stem: stem.stem, url: stem.url, isIncluded: stem.stem == .piano)
-                }
-                if !generatedStemOptions.contains(where: { $0.isIncluded }),
-                   !generatedStemOptions.isEmpty {
-                    generatedStemOptions[0].isIncluded = true
-                }
-
+                configureStemOptions(stems, for: input)
                 applySelectedStemMix()
             } catch {
                 isIsolating = false
@@ -1011,8 +983,28 @@ private final class PracticePlayerModel: ObservableObject {
         }
     }
 
+    func isStemIncluded(_ stem: PracticeStem) -> Bool {
+        generatedStemOptions.first { $0.stem == stem }?.isIncluded == true
+    }
+
+    func setStem(_ stem: PracticeStem, included: Bool) {
+        guard let index = generatedStemOptions.firstIndex(where: { $0.stem == stem }),
+              generatedStemOptions[index].isIncluded != included else {
+            return
+        }
+
+        if !included, generatedStemOptions.filter(\.isIncluded).count <= 1 {
+            statusText = "Keep at least one stem selected."
+            return
+        }
+
+        generatedStemOptions[index].isIncluded = included
+        applySelectedStemMix()
+    }
+
     func applySelectedStemMix() {
-        guard !isMixingStems else {
+        if isMixingStems {
+            pendingStemMixRequest = true
             return
         }
 
@@ -1027,6 +1019,9 @@ private final class PracticePlayerModel: ObservableObject {
         let outputURL = outputDirectory.appendingPathComponent("selected-stems.wav", isDirectory: false)
         let selectedURLs = selectedOptions.map(\.url)
         let selectedLabel = selectedOptions.map { $0.stem.displayName }.joined(separator: " + ")
+        if let originalAudioURL {
+            persistStemSelection(selectedOptions.map(\.stem), for: originalAudioURL)
+        }
 
         isMixingStems = true
         statusText = selectedOptions.count == 1 ? "Loading \(selectedLabel)..." : "Mixing \(selectedLabel)..."
@@ -1041,14 +1036,15 @@ private final class PracticePlayerModel: ObservableObject {
                 isMixingStems = false
 
                 if loadAudio(outputURL, preserveOriginalSource: true, addToRecents: false) {
-                    trackUnsavedGenerated(outputURL)
-                    statusText = "Loaded \(selectedLabel). Save it to keep the WAV."
+                    statusText = "Loaded \(selectedLabel)"
                 } else {
                     removeGeneratedFile(outputURL)
                 }
+                finishStemMixIfNeeded()
             } catch {
                 isMixingStems = false
                 statusText = "Could not mix stems: \(error.localizedDescription)"
+                finishStemMixIfNeeded()
             }
         }
     }
@@ -1073,7 +1069,7 @@ private final class PracticePlayerModel: ObservableObject {
 
         Task {
             do {
-                let outputDirectory = generatedJobRootURL(under: mvsepOutputRootURL)
+                let outputDirectory = stemCacheDirectory(for: input)
                 try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
                 let stemURL = try await MVSepClient.extractDigitalPiano(
                     input: input,
@@ -1085,10 +1081,14 @@ private final class PracticePlayerModel: ObservableObject {
                     }
                 }
                 isRunningMVSep = false
-                generatedStemOptions = []
-                if loadAudio(stemURL, preserveOriginalSource: true, addToRecents: false) {
-                    trackUnsavedGenerated(stemURL)
-                    statusText = "Loaded MVSep digital piano stem. Save it to keep the WAV."
+                let cachedPianoURL = outputDirectory.appendingPathComponent(MLXStemSpec.piano.expectedFileName, isDirectory: false)
+                try copyGeneratedStem(from: stemURL, to: cachedPianoURL)
+                removeGeneratedFile(stemURL, preserving: cachedPianoURL)
+
+                if restoreCachedStemOptions(for: input, autoLoad: true) {
+                    statusText = "Loaded MVSep digital piano"
+                } else if loadAudio(cachedPianoURL, preserveOriginalSource: true, addToRecents: false) {
+                    statusText = "Loaded MVSep digital piano"
                 } else {
                     removeGeneratedFile(stemURL)
                 }
@@ -1096,59 +1096,6 @@ private final class PracticePlayerModel: ObservableObject {
                 isRunningMVSep = false
                 statusText = "MVSep failed: \(error.localizedDescription)"
             }
-        }
-    }
-
-    func saveGeneratedStem() {
-        guard let sourceURL = generatedRetention.unsavedURL else {
-            statusText = "No generated stem to save."
-            return
-        }
-
-        let savePanel = NSSavePanel()
-        savePanel.title = "Save Generated Stem"
-        savePanel.nameFieldStringValue = sourceURL.lastPathComponent
-        savePanel.canCreateDirectories = true
-        savePanel.isExtensionHidden = false
-        savePanel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .wav]
-
-        guard savePanel.runModal() == .OK, let destinationURL = savePanel.url else {
-            return
-        }
-
-        do {
-            try copyGeneratedStem(from: sourceURL, to: destinationURL)
-            let temporaryURL = generatedRetention.markSaved()
-            updateGeneratedSaveState()
-            generatedStemOptions = []
-            removeGeneratedFile(temporaryURL, preserving: destinationURL)
-
-            if loadAudio(destinationURL, preserveOriginalSource: true, addToRecents: true) {
-                statusText = "Saved \(destinationURL.lastPathComponent)"
-            }
-        } catch {
-            statusText = "Could not save stem: \(error.localizedDescription)"
-        }
-    }
-
-    func discardUnsavedGeneratedStem() {
-        let discardableURL = generatedRetention.takeDiscardableURL()
-        updateGeneratedSaveState()
-        generatedStemOptions = []
-        removeGeneratedFile(discardableURL)
-    }
-
-    func discardGeneratedStemAndRestoreSource() {
-        let sourceURL = originalAudioURL
-        discardUnsavedGeneratedStem()
-
-        guard let sourceURL else {
-            return
-        }
-
-        if displayedAudioURL?.standardizedFileURL.path != sourceURL.standardizedFileURL.path,
-           loadAudio(sourceURL, preserveOriginalSource: false, addToRecents: false) {
-            statusText = "Discarded stem mix."
         }
     }
 
@@ -1284,7 +1231,7 @@ private final class PracticePlayerModel: ObservableObject {
         from input: URL,
         progress: @escaping @Sendable (String) -> Void
     ) async throws -> [ExtractedPracticeStem] {
-        let mlxJobRootURL = generatedJobRootURL(under: mlxOutputRootURL)
+        let mlxJobRootURL = stemCacheDirectory(for: input)
         guard mlxCommand(input: input, outputRoot: mlxJobRootURL, spec: .piano) != nil else {
             throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator on PATH.")
         }
@@ -1296,6 +1243,14 @@ private final class PracticePlayerModel: ObservableObject {
         var failures: [String] = []
 
         for spec in MLXStemSpec.practiceSpecs {
+            if FileManager.default.fileExists(atPath: mlxJobRootURL.appendingPathComponent(spec.expectedFileName).path) {
+                extractedStems.append(ExtractedPracticeStem(
+                    stem: spec.stem,
+                    url: mlxJobRootURL.appendingPathComponent(spec.expectedFileName, isDirectory: false)
+                ))
+                continue
+            }
+
             guard let command = mlxCommand(input: input, outputRoot: mlxJobRootURL, spec: spec) else {
                 throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator on PATH.")
             }
@@ -1410,10 +1365,93 @@ private final class PracticePlayerModel: ObservableObject {
         return newestURL
     }
 
-    private func trackUnsavedGenerated(_ url: URL) {
-        let previousURL = generatedRetention.trackUnsaved(url)
-        updateGeneratedSaveState()
-        removeGeneratedFile(previousURL, preserving: url)
+    private func finishStemMixIfNeeded() {
+        guard pendingStemMixRequest else {
+            return
+        }
+
+        pendingStemMixRequest = false
+        applySelectedStemMix()
+    }
+
+    @discardableResult
+    private func restoreCachedStemOptions(for sourceURL: URL, autoLoad: Bool) -> Bool {
+        let stems = cachedPracticeStems(for: sourceURL)
+        guard !stems.isEmpty else {
+            return false
+        }
+
+        configureStemOptions(stems, for: sourceURL)
+        statusText = "Loaded cached stems."
+
+        if autoLoad {
+            applySelectedStemMix()
+        }
+
+        return true
+    }
+
+    private func configureStemOptions(_ stems: [ExtractedPracticeStem], for sourceURL: URL) {
+        let availableStems = Set(stems.map(\.stem))
+        let cachedSelection = readStemSelection(for: sourceURL).intersection(availableStems)
+        let defaultSelection: Set<PracticeStem>
+
+        if !cachedSelection.isEmpty {
+            defaultSelection = cachedSelection
+        } else if availableStems.contains(.piano) {
+            defaultSelection = [.piano]
+        } else if let firstStem = stems.first?.stem {
+            defaultSelection = [firstStem]
+        } else {
+            defaultSelection = []
+        }
+
+        generatedStemOptions = stems.map { stem in
+            GeneratedStemOption(
+                stem: stem.stem,
+                url: stem.url,
+                isIncluded: defaultSelection.contains(stem.stem)
+            )
+        }
+    }
+
+    private func cachedPracticeStems(for sourceURL: URL) -> [ExtractedPracticeStem] {
+        let cacheDirectory = stemCacheDirectory(for: sourceURL)
+        return MLXStemSpec.practiceSpecs.compactMap { spec in
+            let stemURL = cacheDirectory.appendingPathComponent(spec.expectedFileName, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: stemURL.path) else {
+                return nil
+            }
+            return ExtractedPracticeStem(stem: spec.stem, url: stemURL)
+        }
+    }
+
+    private func stemCacheDirectory(for sourceURL: URL) -> URL {
+        let key = StemCacheKey(sourceURL: sourceURL)
+        return mlxOutputRootURL.appendingPathComponent(key.directoryName, isDirectory: true)
+    }
+
+    private func readStemSelection(for sourceURL: URL) -> Set<PracticeStem> {
+        let selectionURL = stemCacheDirectory(for: sourceURL).appendingPathComponent(stemSelectionFileName, isDirectory: false)
+        guard let data = try? Data(contentsOf: selectionURL),
+              let selection = try? JSONDecoder().decode(CachedStemSelection.self, from: data) else {
+            return []
+        }
+
+        return Set(selection.includedStems)
+    }
+
+    private func persistStemSelection(_ stems: [PracticeStem], for sourceURL: URL) {
+        let cacheDirectory = stemCacheDirectory(for: sourceURL)
+        let selectionURL = cacheDirectory.appendingPathComponent(stemSelectionFileName, isDirectory: false)
+
+        do {
+            try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(CachedStemSelection(includedStems: stems))
+            try data.write(to: selectionURL, options: .atomic)
+        } catch {
+            statusText = "Could not remember stem selection: \(error.localizedDescription)"
+        }
     }
 
     private func createSelectedStemMix(from inputs: [URL], output: URL) async throws {
@@ -1445,10 +1483,6 @@ private final class PracticePlayerModel: ObservableObject {
         guard FileManager.default.fileExists(atPath: output.path) else {
             throw AppProcessError.failed("ffmpeg finished but did not create \(output.path)")
         }
-    }
-
-    private func updateGeneratedSaveState() {
-        canSaveGeneratedStem = generatedRetention.canSave
     }
 
     private func copyGeneratedStem(from sourceURL: URL, to destinationURL: URL) throws {
@@ -1499,7 +1533,6 @@ private final class PracticePlayerModel: ObservableObject {
     private func generatedJobDirectory(containing url: URL) -> URL? {
         let standardizedURL = url.standardizedFileURL
         let generatedRoots = [
-            mlxOutputRootURL.standardizedFileURL,
             mvsepOutputRootURL.standardizedFileURL
         ]
 
@@ -1521,6 +1554,40 @@ private final class PracticePlayerModel: ObservableObject {
         return nil
     }
 
+    private func pruneStemCachesToRecents() {
+        let retainedDirectoryNames = Set(recentFiles.entries.map { entry in
+            StemCacheKey(sourceURL: entry.url).directoryName
+        })
+
+        guard let cacheDirectories = try? FileManager.default.contentsOfDirectory(
+            at: mlxOutputRootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return
+        }
+
+        for cacheDirectory in cacheDirectories {
+            guard (try? cacheDirectory.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                continue
+            }
+
+            guard !retainedDirectoryNames.contains(cacheDirectory.lastPathComponent) else {
+                continue
+            }
+
+            try? FileManager.default.removeItem(at: cacheDirectory)
+        }
+    }
+
+    private func removeStemCache(for sourceURL: URL) {
+        try? FileManager.default.removeItem(at: stemCacheDirectory(for: sourceURL))
+    }
+
+    private func removeAllStemCaches() {
+        try? FileManager.default.removeItem(at: mlxOutputRootURL)
+    }
+
     private func loadRecents() {
         guard let data = UserDefaults.standard.data(forKey: recentFilesDefaultsKey),
               let stored = try? JSONDecoder().decode(RecentFilesList.self, from: data) else {
@@ -1535,6 +1602,7 @@ private final class PracticePlayerModel: ObservableObject {
         recentFiles.noteOpened(url)
         recentAudioItems = recentFiles.entries
         persistRecents()
+        pruneStemCachesToRecents()
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
     }
 
@@ -1542,6 +1610,8 @@ private final class PracticePlayerModel: ObservableObject {
         recentFiles.remove(url)
         recentAudioItems = recentFiles.entries
         persistRecents()
+        removeStemCache(for: url)
+        pruneStemCachesToRecents()
     }
 
     private func persistRecents() {

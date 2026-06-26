@@ -45,7 +45,7 @@ The local MLX path runs specialist models for each selectable stem:
 | Bass | `kuielab_a_bass.onnx` |
 | Drums | `kuielab_b_drums.onnx` |
 
-After processing, choose any generated stems with the checkboxes and click Use to load that mix. Unsaved generated WAVs are stored under Application Support and deleted when discarded, replaced, or when the app closes.
+After processing, choose any generated stems with the checkboxes. By Ear reloads the selected mix automatically and keeps processed stems under Application Support while the source song remains in Recents. Clearing Recents, losing a recent file, or pushing a song out of the recent list removes its cached stems.
 
 The optional MVSep Digital Piano button uploads to MVSep with a user-provided API token and uses separation type `79`.
 
