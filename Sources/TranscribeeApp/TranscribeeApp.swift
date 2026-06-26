@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import AppKit
 import SwiftUI
 import TranscribeeCore
 import UniformTypeIdentifiers
@@ -12,13 +13,19 @@ private let supportedAudioTypes: [UTType] = [
     UTType(filenameExtension: "flac") ?? .audio
 ]
 
+private let titlebarControlPadding: CGFloat = 76
+
 @main
 struct TranscribeeApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .frame(minWidth: 860, minHeight: 560)
         }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(
+            width: PracticeWindowLayout.metrics(hasAudio: false).width,
+            height: PracticeWindowLayout.metrics(hasAudio: false).height
+        )
     }
 }
 
@@ -26,35 +33,22 @@ private struct ContentView: View {
     @StateObject private var model = PracticePlayerModel()
     @State private var isImporterPresented = false
     @State private var isDropTargeted = false
+    @State private var isYouTubeSheetPresented = false
+    @State private var isAdvancedSheetPresented = false
+    @State private var youtubeURLString = ""
+    @AppStorage("mvsepApiToken") private var mvsepApiToken = ""
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        let metrics = PracticeWindowLayout.metrics(hasAudio: model.hasAudio)
 
-            Divider()
-
-            VStack(spacing: 18) {
-                WaveformView(
-                    peaks: model.waveformPeaks,
-                    duration: model.duration,
-                    currentTime: model.currentTime,
-                    loopRegion: model.loopRegion,
-                    isDropTargeted: isDropTargeted,
-                    onSeek: model.seek(to:),
-                    onSelectLoop: model.setLoopSelection(start:end:)
-                )
-                .frame(minHeight: 210)
-                .padding(.top, 8)
-
-                transport
-                loopControls
-                analysisControls
-                demucsControls
-
-                Spacer(minLength: 0)
+        Group {
+            if model.hasAudio {
+                practiceSurface
+            } else {
+                emptySurface
             }
-            .padding(20)
         }
+        .frame(minWidth: metrics.width, minHeight: metrics.height)
         .background(Color(nsColor: .windowBackgroundColor))
         .fileImporter(
             isPresented: $isImporterPresented,
@@ -71,16 +65,94 @@ private struct ContentView: View {
         .onReceive(Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()) { _ in
             model.tickPlayback()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            model.discardUnsavedGeneratedStem()
+        }
+        .onDisappear {
+            model.discardUnsavedGeneratedStem()
+        }
+        .onChange(of: model.hasAudio) { _, hasAudio in
+            resizeWindow(hasAudio: hasAudio)
+        }
+        .sheet(isPresented: $isYouTubeSheetPresented) {
+            youtubeSheet
+        }
+        .sheet(isPresented: $isAdvancedSheetPresented) {
+            advancedSheet
+        }
+    }
+
+    private var practiceSurface: some View {
+        VStack(spacing: 0) {
+            header
+
+            Divider()
+
+            VStack(spacing: 24) {
+                WaveformView(
+                    peaks: model.waveformPeaks,
+                    duration: model.duration,
+                    currentTime: model.currentTime,
+                    loopRegion: model.loopRegion,
+                    isDropTargeted: isDropTargeted,
+                    onSeek: model.seek(to:),
+                    onSelectLoop: model.setLoopSelection(start:end:)
+                )
+                .frame(minHeight: 210)
+                .padding(.top, 8)
+
+                if model.currentSourceURL != nil || model.canSaveGeneratedStem {
+                    contextualActions
+                }
+
+                transport
+                keyControls
+
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+        }
+    }
+
+    private var emptySurface: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                openMenu
+                    .controlSize(.large)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Ready to practice")
+                        .font(.headline)
+                    Text(model.statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                advancedButton
+            }
+            .padding(.top, 18)
+            .padding(.horizontal, 20)
+            .padding(.leading, titlebarControlPadding)
+
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 30, weight: .regular))
+                        .foregroundStyle(.secondary.opacity(0.75))
+                }
+                .frame(height: 72)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 18)
+        }
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            Button {
-                isImporterPresented = true
-            } label: {
-                Label("Open Audio", systemImage: "folder")
-            }
-            .keyboardShortcut("o", modifiers: [.command])
+            openMenu
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.loadedFileName)
@@ -98,155 +170,304 @@ private struct ContentView: View {
             Text(timeRangeText)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
+
+            advancedButton
         }
-        .padding(.horizontal, 20)
+        .padding(.trailing, 20)
+        .padding(.leading, titlebarControlPadding + 20)
         .padding(.vertical, 14)
     }
 
+    private var openMenu: some View {
+        Menu {
+            Button {
+                isImporterPresented = true
+            } label: {
+                Label("Audio File", systemImage: "folder")
+            }
+            .keyboardShortcut("o", modifiers: [.command])
+
+            Button {
+                isYouTubeSheetPresented = true
+            } label: {
+                Label("YouTube Link", systemImage: "link")
+            }
+
+            Divider()
+
+            if model.recentAudioItems.isEmpty {
+                Text("No Recents")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.recentAudioItems) { item in
+                    Button {
+                        model.openRecent(item)
+                    } label: {
+                        Label(item.displayName, systemImage: "music.note")
+                    }
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    model.clearRecents()
+                } label: {
+                    Label("Clear Recents", systemImage: "trash")
+                }
+            }
+        } label: {
+            Label("Open", systemImage: "folder")
+        }
+        .menuStyle(.button)
+    }
+
+    private var advancedButton: some View {
+        Button {
+            isAdvancedSheetPresented = true
+        } label: {
+            Label("Advanced", systemImage: "slider.horizontal.3")
+                .labelStyle(.iconOnly)
+        }
+        .help("Advanced")
+    }
+
+    private var contextualActions: some View {
+        HStack(spacing: 10) {
+            if model.canSaveGeneratedStem {
+                Label("Piano stem ready", systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    model.saveGeneratedStem()
+                } label: {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                }
+                .keyboardShortcut("s", modifiers: [.command])
+
+                Button(role: .destructive) {
+                    model.discardGeneratedStemAndRestoreSource()
+                } label: {
+                    Label("Discard", systemImage: "trash")
+                }
+            } else if model.currentSourceURL != nil {
+                Button {
+                    model.isolatePiano()
+                } label: {
+                    Label(model.isIsolating ? "Extracting..." : "Extract Piano", systemImage: "pianokeys")
+                }
+                .disabled(model.isStemWorkRunning)
+            }
+
+            Spacer()
+        }
+        .frame(minHeight: 32)
+    }
+
     private var transport: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 10) {
+        VStack(spacing: 16) {
+            HStack(spacing: 14) {
                 Button {
                     model.seekRelative(-5)
                 } label: {
-                    Label("Back 5s", systemImage: "gobackward.5")
+                    Label("5s", systemImage: "gobackward.5")
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [])
-
-                Button {
-                    model.seekRelative(-1)
-                } label: {
-                    Label("Back 1s", systemImage: "backward.end.alt")
-                }
-                .keyboardShortcut(.leftArrow, modifiers: [.shift])
 
                 Button {
                     model.togglePlayback()
                 } label: {
                     Label(model.isPlaying ? "Pause" : "Play", systemImage: model.isPlaying ? "pause.fill" : "play.fill")
-                        .frame(minWidth: 92)
+                        .frame(minWidth: 108)
                 }
+                .controlSize(.large)
                 .keyboardShortcut(.space, modifiers: [])
-
-                Button {
-                    model.seekRelative(1)
-                } label: {
-                    Label("Forward 1s", systemImage: "forward.end.alt")
-                }
-                .keyboardShortcut(.rightArrow, modifiers: [.shift])
 
                 Button {
                     model.seekRelative(5)
                 } label: {
-                    Label("Forward 5s", systemImage: "goforward.5")
+                    Label("5s", systemImage: "goforward.5")
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [])
             }
+            .disabled(model.currentSourceURL == nil)
 
-            HStack(spacing: 12) {
+            HStack(spacing: 18) {
                 Button {
-                    model.stepSpeed(-0.01)
+                    model.stepSpeed(-0.05)
                 } label: {
                     Label("Slower", systemImage: "minus")
                 }
                 .keyboardShortcut("-", modifiers: [])
 
-                Slider(
-                    value: Binding(
-                        get: { model.speed },
-                        set: { model.setSpeed($0) }
-                    ),
-                    in: PracticeSpeed.minimum...PracticeSpeed.maximum
-                )
-                .frame(maxWidth: 360)
+                Text(model.speedText)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .frame(width: 96)
 
                 Button {
-                    model.stepSpeed(0.01)
+                    model.stepSpeed(0.05)
                 } label: {
                     Label("Faster", systemImage: "plus")
                 }
                 .keyboardShortcut("+", modifiers: [])
 
-                Text("\(model.speed, specifier: "%.2f")x")
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 56, alignment: .trailing)
+                Divider()
+                    .frame(height: 24)
+
+                Button {
+                    model.toggleLoop()
+                } label: {
+                    Label(model.loopButtonText, systemImage: "repeat")
+                }
+                .disabled(model.currentSourceURL == nil)
+                .keyboardShortcut("l", modifiers: [])
+
+                if model.loopRegion != nil {
+                    Button(role: .destructive) {
+                        model.clearLoop()
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help("Clear loop")
+                }
             }
+            .disabled(model.currentSourceURL == nil)
         }
     }
 
-    private var loopControls: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.setLoopStartAtCurrentTime()
-            } label: {
-                Label("Set A", systemImage: "a.circle")
-            }
-            .keyboardShortcut("[", modifiers: [])
-
-            Button {
-                model.setLoopEndAtCurrentTime()
-            } label: {
-                Label("Set B", systemImage: "b.circle")
-            }
-            .keyboardShortcut("]", modifiers: [])
-
-            Button {
-                model.toggleLoop()
-            } label: {
-                Label(model.loopRegion?.isEnabled == true ? "Disable Loop" : "Enable Loop", systemImage: "repeat")
-            }
-            .keyboardShortcut("l", modifiers: [])
-
-            Button(role: .destructive) {
-                model.clearLoop()
-            } label: {
-                Label("Clear", systemImage: "xmark.circle")
-            }
-
-            Spacer()
-
-            Text(model.loopDescription)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var analysisControls: some View {
+    private var keyControls: some View {
         HStack(spacing: 12) {
-            Label(model.detectedKeyText, systemImage: "music.quarternote.3")
+            Label(model.keySummaryText, systemImage: "music.quarternote.3")
 
-            Picker("Target", selection: Binding(get: { model.targetRoot }, set: { model.setTargetRoot($0) })) {
-                Text("No transpose").tag(PitchClass?.none)
+            Picker("Change to", selection: Binding(get: { model.targetRoot }, set: { model.setTargetRoot($0) })) {
+                Text("Original").tag(PitchClass?.none)
                 ForEach(PitchClass.allCases) { pitchClass in
                     Text(pitchClass.displayName).tag(PitchClass?.some(pitchClass))
                 }
             }
             .pickerStyle(.menu)
-            .frame(width: 180)
-
-            Text("Pitch \(model.pitchCents) cents")
-                .foregroundStyle(.secondary)
+            .frame(width: 150)
 
             Spacer()
         }
+        .foregroundStyle(.secondary)
     }
 
-    private var demucsControls: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.isolatePiano()
-            } label: {
-                Label(model.isIsolating ? "Isolating..." : "Isolate Piano", systemImage: "pianokeys")
-            }
-            .disabled(model.isIsolating || model.currentSourceURL == nil)
+    private var youtubeSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Open YouTube")
+                .font(.title2.weight(.semibold))
 
-            Button {
-                model.installDemucs()
-            } label: {
-                Label(model.isInstallingDemucs ? "Installing..." : "Install Demucs", systemImage: "arrow.down.circle")
-            }
-            .disabled(model.isInstallingDemucs)
+            TextField("YouTube URL", text: $youtubeURLString)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    startYouTubeDownload()
+                }
 
-            Spacer()
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    isYouTubeSheetPresented = false
+                }
+
+                Button {
+                    startYouTubeDownload()
+                } label: {
+                    Label(model.isDownloadingYouTube ? "Opening..." : "Open", systemImage: "arrow.down.to.line")
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.isDownloadingYouTube || youtubeURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
+    }
+
+    private var advancedSheet: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Advanced")
+                    .font(.title2.weight(.semibold))
+
+                Spacer()
+
+                Button {
+                    isAdvancedSheetPresented = false
+                } label: {
+                    Label("Close", systemImage: "xmark")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Close")
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Speed", systemImage: "speedometer")
+
+                HStack(spacing: 12) {
+                    Slider(
+                        value: Binding(
+                            get: { model.speed },
+                            set: { model.setSpeed($0) }
+                        ),
+                        in: PracticeSpeed.minimum...PracticeSpeed.maximum
+                    )
+
+                    Text(model.speedText)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Extraction", systemImage: "pianokeys")
+
+                HStack(spacing: 10) {
+                    Button {
+                        model.extractDigitalPianoWithMVSep(token: mvsepApiToken)
+                    } label: {
+                        Label(model.isRunningMVSep ? "Running..." : "MVSep Digital Piano", systemImage: "cloud")
+                    }
+                    .disabled(model.isStemWorkRunning || model.currentSourceURL == nil || mvsepApiToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    SecureField("MVSep API token", text: $mvsepApiToken)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Button {
+                    model.installLocalSeparators()
+                } label: {
+                    Label(model.isInstallingSeparators ? "Installing..." : "Install Local AI", systemImage: "arrow.down.circle")
+                }
+                .disabled(model.isInstallingSeparators)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+    }
+
+    private func startYouTubeDownload() {
+        model.downloadYouTubeAudio(youtubeURLString)
+        isYouTubeSheetPresented = false
+    }
+
+    private func resizeWindow(hasAudio: Bool) {
+        let metrics = PracticeWindowLayout.metrics(hasAudio: hasAudio)
+        let size = NSSize(width: metrics.width, height: metrics.height)
+
+        DispatchQueue.main.async {
+            guard let window = NSApplication.shared.keyWindow
+                ?? NSApplication.shared.windows.first(where: { $0.isVisible }) else {
+                return
+            }
+
+            window.minSize = size
+            window.setContentSize(size)
         }
     }
 
@@ -424,11 +645,18 @@ private final class PracticePlayerModel: ObservableObject {
     @Published var targetRoot: PitchClass?
     @Published var loopRegion: LoopRegion?
     @Published var isInstallingDemucs = false
+    @Published var isInstallingSeparators = false
     @Published var isIsolating = false
+    @Published var isRunningMVSep = false
+    @Published var isDownloadingYouTube = false
+    @Published var recentAudioItems: [RecentFileEntry] = []
+    @Published var canSaveGeneratedStem = false
+    @Published var hasAudio = false
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let timePitch = AVAudioUnitTimePitch()
+    private let recentFilesDefaultsKey = "recentAudioFiles.v1"
     private var playbackFile: AVAudioFile?
     private var playbackSampleRate = 44_100.0
     private var playbackAnchorTime = 0.0
@@ -436,9 +664,15 @@ private final class PracticePlayerModel: ObservableObject {
     private var originalAudioURL: URL?
     private var displayedAudioURL: URL?
     private var pendingLoopStart: Double?
+    private var recentFiles = RecentFilesList()
+    private var generatedRetention = GeneratedAudioRetention()
 
     var currentSourceURL: URL? {
         originalAudioURL
+    }
+
+    var isStemWorkRunning: Bool {
+        isIsolating || isRunningMVSep
     }
 
     var detectedKeyText: String {
@@ -461,15 +695,98 @@ private final class PracticePlayerModel: ObservableObject {
         return "Loop \(enabled): \(Self.formatTime(loopRegion.start)) - \(Self.formatTime(loopRegion.end))"
     }
 
+    var speedText: String {
+        PracticeSurfaceCopy.speedText(speed)
+    }
+
+    var keySummaryText: String {
+        PracticeSurfaceCopy.keyText(detectedKey: detectedKey, targetRoot: targetRoot)
+    }
+
+    var loopButtonText: String {
+        PracticeSurfaceCopy.loopText(loopRegion)
+    }
+
     init() {
         engine.attach(player)
         engine.attach(timePitch)
-        timePitch.rate = Float(speed)
-        timePitch.pitch = 0
+        loadRecents()
+        applyTimePitchSettings()
     }
 
-    func load(_ url: URL) {
-        loadAudio(url, preserveOriginalSource: false)
+    @discardableResult
+    func load(_ url: URL) -> Bool {
+        let previousGeneratedURL = generatedRetention.takeDiscardableURL()
+        updateGeneratedSaveState()
+
+        if loadAudio(url, preserveOriginalSource: false, addToRecents: true) {
+            removeGeneratedFile(previousGeneratedURL)
+            return true
+        } else if let previousGeneratedURL {
+            _ = generatedRetention.trackUnsaved(previousGeneratedURL)
+            updateGeneratedSaveState()
+        }
+
+        return false
+    }
+
+    func openRecent(_ item: RecentFileEntry) {
+        guard FileManager.default.fileExists(atPath: item.path) else {
+            removeRecent(item.url)
+            statusText = "Recent file missing: \(item.displayName)"
+            return
+        }
+
+        load(item.url)
+    }
+
+    func clearRecents() {
+        recentFiles = RecentFilesList()
+        recentAudioItems = []
+        UserDefaults.standard.removeObject(forKey: recentFilesDefaultsKey)
+    }
+
+    func downloadYouTubeAudio(_ rawURLString: String) {
+        guard !isDownloadingYouTube else {
+            return
+        }
+
+        let trimmed = rawURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let pageURL = URL(string: trimmed),
+              let scheme = pageURL.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            statusText = "Enter a valid YouTube URL."
+            return
+        }
+
+        guard let ytDLP = ProcessRunner.findExecutable("yt-dlp") else {
+            statusText = "Install yt-dlp first, or put yt-dlp on PATH."
+            return
+        }
+
+        isDownloadingYouTube = true
+        statusText = "Downloading YouTube audio..."
+
+        Task {
+            do {
+                try FileManager.default.createDirectory(at: youtubeDownloadRootURL, withIntermediateDirectories: true)
+                let command = YouTubeAudioDownloadCommand.ytDLP(
+                    ytDLP,
+                    pageURL: pageURL,
+                    outputDirectory: youtubeDownloadRootURL
+                )
+                let output = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+                let downloadedURL = try findDownloadedYouTubeAudio(from: output)
+
+                isDownloadingYouTube = false
+                if load(downloadedURL) {
+                    statusText = "Downloaded \(downloadedURL.lastPathComponent)"
+                }
+            } catch {
+                isDownloadingYouTube = false
+                statusText = "YouTube download failed: \(error.localizedDescription)"
+            }
+        }
     }
 
     func togglePlayback() {
@@ -535,7 +852,7 @@ private final class PracticePlayerModel: ObservableObject {
             playbackAnchorDate = Date()
         }
         speed = clamped
-        timePitch.rate = Float(clamped)
+        applyTimePitchSettings()
     }
 
     func stepSpeed(_ delta: Double) {
@@ -544,7 +861,7 @@ private final class PracticePlayerModel: ObservableObject {
 
     func setTargetRoot(_ root: PitchClass?) {
         targetRoot = root
-        timePitch.pitch = Float(pitchCents)
+        applyTimePitchSettings()
     }
 
     func setLoopSelection(start: Double, end: Double) {
@@ -586,26 +903,26 @@ private final class PracticePlayerModel: ObservableObject {
         pendingLoopStart = nil
     }
 
-    func installDemucs() {
-        guard !isInstallingDemucs else {
+    func installLocalSeparators() {
+        guard !isInstallingSeparators else {
             return
         }
 
-        isInstallingDemucs = true
-        statusText = "Installing Demucs into \(demucsVenvURL.path)"
+        isInstallingSeparators = true
+        statusText = "Installing local AI into \(localSeparatorVenvURL.path)"
 
         Task {
             do {
                 try FileManager.default.createDirectory(
-                    at: demucsVenvURL.deletingLastPathComponent(),
+                    at: localSeparatorVenvURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try await DemucsInstaller.install(into: demucsVenvURL)
-                isInstallingDemucs = false
-                statusText = "Demucs installed locally."
+                try await LocalSeparatorInstaller.install(into: localSeparatorVenvURL)
+                isInstallingSeparators = false
+                statusText = "Local AI installed."
             } catch {
-                isInstallingDemucs = false
-                statusText = "Demucs install failed: \(error.localizedDescription)"
+                isInstallingSeparators = false
+                statusText = "Local AI install failed: \(error.localizedDescription)"
             }
         }
     }
@@ -618,34 +935,124 @@ private final class PracticePlayerModel: ObservableObject {
             statusText = "Open an audio file before isolating piano."
             return
         }
-        guard let command = demucsCommand(input: input) else {
-            statusText = "Install Demucs first, or put demucs on PATH."
-            return
-        }
-
         isIsolating = true
-        statusText = "Running local Demucs piano isolation..."
+        statusText = "Running local keys extraction..."
 
         Task {
             do {
-                try FileManager.default.createDirectory(at: demucsOutputRootURL, withIntermediateDirectories: true)
-                _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
-
-                guard FileManager.default.fileExists(atPath: command.expectedPianoStem.path) else {
-                    throw AppProcessError.failed("Demucs finished but did not create \(command.expectedPianoStem.path)")
-                }
-
+                let stemURL = try await extractLocalKeysStem(from: input)
                 isIsolating = false
-                loadAudio(command.expectedPianoStem, preserveOriginalSource: true)
-                statusText = "Loaded isolated piano stem."
+                if loadAudio(stemURL, preserveOriginalSource: true, addToRecents: false) {
+                    trackUnsavedGenerated(stemURL)
+                    statusText = "Loaded extracted keys stem. Save it to keep the WAV."
+                } else {
+                    removeGeneratedFile(stemURL)
+                }
             } catch {
                 isIsolating = false
-                statusText = "Piano isolation failed: \(error.localizedDescription)"
+                statusText = "Keys extraction failed: \(error.localizedDescription)"
             }
         }
     }
 
-    private func loadAudio(_ url: URL, preserveOriginalSource: Bool) {
+    func extractDigitalPianoWithMVSep(token: String) {
+        guard !isStemWorkRunning else {
+            return
+        }
+        guard let input = originalAudioURL else {
+            statusText = "Open an audio file before running MVSep."
+            return
+        }
+
+        let apiToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiToken.isEmpty else {
+            statusText = "Enter an MVSep API token first."
+            return
+        }
+
+        isRunningMVSep = true
+        statusText = "Uploading to MVSep Digital Piano..."
+
+        Task {
+            do {
+                let outputDirectory = generatedJobRootURL(under: mvsepOutputRootURL)
+                try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+                let stemURL = try await MVSepClient.extractDigitalPiano(
+                    input: input,
+                    apiToken: apiToken,
+                    outputDirectory: outputDirectory
+                ) { [weak self] message in
+                    Task { @MainActor in
+                        self?.statusText = message
+                    }
+                }
+                isRunningMVSep = false
+                if loadAudio(stemURL, preserveOriginalSource: true, addToRecents: false) {
+                    trackUnsavedGenerated(stemURL)
+                    statusText = "Loaded MVSep digital piano stem. Save it to keep the WAV."
+                } else {
+                    removeGeneratedFile(stemURL)
+                }
+            } catch {
+                isRunningMVSep = false
+                statusText = "MVSep failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func saveGeneratedStem() {
+        guard let sourceURL = generatedRetention.unsavedURL else {
+            statusText = "No generated stem to save."
+            return
+        }
+
+        let savePanel = NSSavePanel()
+        savePanel.title = "Save Generated Stem"
+        savePanel.nameFieldStringValue = sourceURL.lastPathComponent
+        savePanel.canCreateDirectories = true
+        savePanel.isExtensionHidden = false
+        savePanel.allowedContentTypes = [UTType(filenameExtension: "wav") ?? .wav]
+
+        guard savePanel.runModal() == .OK, let destinationURL = savePanel.url else {
+            return
+        }
+
+        do {
+            try copyGeneratedStem(from: sourceURL, to: destinationURL)
+            let temporaryURL = generatedRetention.markSaved()
+            updateGeneratedSaveState()
+            removeGeneratedFile(temporaryURL, preserving: destinationURL)
+
+            if loadAudio(destinationURL, preserveOriginalSource: true, addToRecents: true) {
+                statusText = "Saved \(destinationURL.lastPathComponent)"
+            }
+        } catch {
+            statusText = "Could not save stem: \(error.localizedDescription)"
+        }
+    }
+
+    func discardUnsavedGeneratedStem() {
+        let discardableURL = generatedRetention.takeDiscardableURL()
+        updateGeneratedSaveState()
+        removeGeneratedFile(discardableURL)
+    }
+
+    func discardGeneratedStemAndRestoreSource() {
+        let sourceURL = originalAudioURL
+        discardUnsavedGeneratedStem()
+
+        guard let sourceURL else {
+            return
+        }
+
+        if displayedAudioURL?.standardizedFileURL.path != sourceURL.standardizedFileURL.path,
+           loadAudio(sourceURL, preserveOriginalSource: false, addToRecents: false) {
+            statusText = "Discarded piano stem."
+        }
+    }
+
+    @discardableResult
+    private func loadAudio(_ url: URL, preserveOriginalSource: Bool, addToRecents: Bool) -> Bool {
         let didStartSecurityScope = url.startAccessingSecurityScopedResource()
         defer {
             if didStartSecurityScope {
@@ -668,14 +1075,26 @@ private final class PracticePlayerModel: ObservableObject {
             waveformPeaks = analysis.peaks
             duration = analysis.duration
             currentTime = 0
+            hasAudio = true
             loopRegion = nil
             pendingLoopStart = nil
             detectedKey = KeyDetector.detectKey(fromMonoSamples: analysis.monoSamples, sampleRate: analysis.sampleRate)
-            timePitch.pitch = Float(pitchCents)
+            applyTimePitchSettings()
+            if addToRecents {
+                noteRecent(url)
+            }
             statusText = "Loaded \(url.lastPathComponent)"
+            return true
         } catch {
             statusText = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            return false
         }
+    }
+
+    private func applyTimePitchSettings() {
+        timePitch.rate = Float(speed)
+        timePitch.pitch = Float(pitchCents)
+        timePitch.overlap = PlaybackQualitySettings.timePitchOverlap(forSpeed: speed, pitchCents: pitchCents)
     }
 
     private func ensureEngineStarted(for file: AVAudioFile) throws {
@@ -739,8 +1158,29 @@ private final class PracticePlayerModel: ObservableObject {
             .appendingPathComponent("demucs-venv", isDirectory: true)
     }
 
+    private var localSeparatorVenvURL: URL {
+        appSupportURL
+            .appendingPathComponent("local-separators-venv", isDirectory: true)
+    }
+
     private var demucsOutputRootURL: URL {
         appSupportURL.appendingPathComponent("Stems", isDirectory: true)
+    }
+
+    private var mlxOutputRootURL: URL {
+        appSupportURL.appendingPathComponent("MLXStems", isDirectory: true)
+    }
+
+    private var mlxModelRootURL: URL {
+        appSupportURL.appendingPathComponent("Models", isDirectory: true)
+    }
+
+    private var mvsepOutputRootURL: URL {
+        appSupportURL.appendingPathComponent("MVSepStems", isDirectory: true)
+    }
+
+    private var youtubeDownloadRootURL: URL {
+        appSupportURL.appendingPathComponent("YouTube", isDirectory: true)
     }
 
     private var appSupportURL: URL {
@@ -748,22 +1188,248 @@ private final class PracticePlayerModel: ObservableObject {
             .appendingPathComponent("Transcribee", isDirectory: true)
     }
 
-    private func demucsCommand(input: URL) -> DemucsCommand? {
+    private func extractLocalKeysStem(from input: URL) async throws -> URL {
+        let mlxJobRootURL = generatedJobRootURL(under: mlxOutputRootURL)
+        if let command = mlxCommand(input: input, outputRoot: mlxJobRootURL) {
+            try FileManager.default.createDirectory(at: mlxJobRootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: mlxModelRootURL, withIntermediateDirectories: true)
+            _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+
+            if FileManager.default.fileExists(atPath: command.expectedStem.path) {
+                return command.expectedStem
+            }
+
+            if let discovered = findStem(in: mlxJobRootURL, matching: ["(Piano)", "piano"]) {
+                return discovered
+            }
+
+            throw AppProcessError.failed("MLX finished but did not create \(command.expectedStem.path)")
+        }
+
+        let demucsJobRootURL = generatedJobRootURL(under: demucsOutputRootURL)
+        guard let command = demucsCommand(input: input, outputRoot: demucsJobRootURL) else {
+            throw AppProcessError.failed("Install Local AI first, or put mlx-audio-separator or demucs on PATH.")
+        }
+
+        try FileManager.default.createDirectory(at: demucsJobRootURL, withIntermediateDirectories: true)
+        _ = try await ProcessRunner.run(command.executableURL, arguments: command.arguments)
+
+        guard FileManager.default.fileExists(atPath: command.expectedPianoStem.path) else {
+            throw AppProcessError.failed("Demucs finished but did not create \(command.expectedPianoStem.path)")
+        }
+
+        return command.expectedPianoStem
+    }
+
+    private func mlxCommand(input: URL, outputRoot: URL) -> MLXSeparatorCommand? {
+        let venvExecutable = localSeparatorVenvURL.appendingPathComponent("bin/mlx-audio-separator")
+        if FileManager.default.isExecutableFile(atPath: venvExecutable.path) {
+            return .executable(venvExecutable, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
+        }
+
+        let venvPython = localSeparatorVenvURL.appendingPathComponent("bin/python")
+        if FileManager.default.isExecutableFile(atPath: venvPython.path) {
+            return .pythonModule(venvPython, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
+        }
+
+        if let mlx = ProcessRunner.findExecutable("mlx-audio-separator") {
+            return .executable(mlx, input: input, outputRoot: outputRoot, modelRoot: mlxModelRootURL)
+        }
+
+        return nil
+    }
+
+    private func demucsCommand(input: URL, outputRoot: URL) -> DemucsCommand? {
         let venvDemucs = demucsVenvURL.appendingPathComponent("bin/demucs")
         if FileManager.default.isExecutableFile(atPath: venvDemucs.path) {
-            return .executable(venvDemucs, input: input, outputRoot: demucsOutputRootURL)
+            return .executable(venvDemucs, input: input, outputRoot: outputRoot)
         }
 
         let venvPython = demucsVenvURL.appendingPathComponent("bin/python")
         if FileManager.default.isExecutableFile(atPath: venvPython.path) {
-            return .pythonModule(venvPython, input: input, outputRoot: demucsOutputRootURL)
+            return .pythonModule(venvPython, input: input, outputRoot: outputRoot)
         }
 
         if let demucs = ProcessRunner.findExecutable("demucs") {
-            return .executable(demucs, input: input, outputRoot: demucsOutputRootURL)
+            return .executable(demucs, input: input, outputRoot: outputRoot)
         }
 
         return nil
+    }
+
+    private func findStem(in directory: URL, matching tokens: [String]) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+
+        for case let fileURL as URL in enumerator {
+            guard tokens.contains(where: { fileURL.lastPathComponent.localizedCaseInsensitiveContains($0) }) else {
+                continue
+            }
+            if (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                return fileURL
+            }
+        }
+
+        return nil
+    }
+
+    private func findDownloadedYouTubeAudio(from output: String) throws -> URL {
+        if let printedURL = YouTubeAudioDownloadCommand.downloadedAudioURL(fromOutput: output),
+           FileManager.default.fileExists(atPath: printedURL.path) {
+            return printedURL
+        }
+
+        guard let enumerator = FileManager.default.enumerator(
+            at: youtubeDownloadRootURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw AppProcessError.failed("yt-dlp finished but no downloaded audio folder was readable.")
+        }
+
+        let audioExtensions = Set(["mp3", "m4a", "wav", "flac"])
+        var newestURL: URL?
+        var newestDate = Date.distantPast
+
+        for case let fileURL as URL in enumerator {
+            guard audioExtensions.contains(fileURL.pathExtension.lowercased()) else {
+                continue
+            }
+
+            let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey])
+            guard values?.isRegularFile == true else {
+                continue
+            }
+
+            let modified = values?.contentModificationDate ?? Date.distantPast
+            if modified > newestDate {
+                newestDate = modified
+                newestURL = fileURL
+            }
+        }
+
+        guard let newestURL else {
+            throw AppProcessError.failed("yt-dlp finished but did not create an MP3.")
+        }
+
+        return newestURL
+    }
+
+    private func trackUnsavedGenerated(_ url: URL) {
+        let previousURL = generatedRetention.trackUnsaved(url)
+        updateGeneratedSaveState()
+        removeGeneratedFile(previousURL)
+    }
+
+    private func updateGeneratedSaveState() {
+        canSaveGeneratedStem = generatedRetention.canSave
+    }
+
+    private func copyGeneratedStem(from sourceURL: URL, to destinationURL: URL) throws {
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let destinationPath = destinationURL.standardizedFileURL.path
+
+        guard sourcePath != destinationPath else {
+            return
+        }
+
+        if FileManager.default.fileExists(atPath: destinationPath) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+
+        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+    }
+
+    private func removeGeneratedFile(_ url: URL?, preserving preservedURL: URL? = nil) {
+        guard let url else {
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return
+        }
+
+        if let preservedURL,
+           preservedURL.standardizedFileURL.path == url.standardizedFileURL.path {
+            return
+        }
+
+        if let jobDirectory = generatedJobDirectory(containing: url) {
+            if let preservedURL, generatedJobDirectory(containing: preservedURL) == jobDirectory {
+                try? FileManager.default.removeItem(at: url)
+            } else {
+                try? FileManager.default.removeItem(at: jobDirectory)
+            }
+            return
+        }
+
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private func generatedJobRootURL(under root: URL) -> URL {
+        root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    }
+
+    private func generatedJobDirectory(containing url: URL) -> URL? {
+        let standardizedURL = url.standardizedFileURL
+        let generatedRoots = [
+            demucsOutputRootURL.standardizedFileURL,
+            mlxOutputRootURL.standardizedFileURL,
+            mvsepOutputRootURL.standardizedFileURL
+        ]
+
+        for root in generatedRoots {
+            let rootPath = root.path
+            let urlPath = standardizedURL.path
+            guard urlPath.hasPrefix(rootPath + "/") else {
+                continue
+            }
+
+            let relativePath = String(urlPath.dropFirst(rootPath.count + 1))
+            guard let jobName = relativePath.split(separator: "/").first else {
+                continue
+            }
+
+            return root.appendingPathComponent(String(jobName), isDirectory: true)
+        }
+
+        return nil
+    }
+
+    private func loadRecents() {
+        guard let data = UserDefaults.standard.data(forKey: recentFilesDefaultsKey),
+              let stored = try? JSONDecoder().decode(RecentFilesList.self, from: data) else {
+            return
+        }
+
+        recentFiles = stored
+        recentAudioItems = stored.entries
+    }
+
+    private func noteRecent(_ url: URL) {
+        recentFiles.noteOpened(url)
+        recentAudioItems = recentFiles.entries
+        persistRecents()
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+    }
+
+    private func removeRecent(_ url: URL) {
+        recentFiles.remove(url)
+        recentAudioItems = recentFiles.entries
+        persistRecents()
+    }
+
+    private func persistRecents() {
+        guard let data = try? JSONEncoder().encode(recentFiles) else {
+            return
+        }
+
+        UserDefaults.standard.set(data, forKey: recentFilesDefaultsKey)
     }
 
     static func formatTime(_ value: Double) -> String {
@@ -870,6 +1536,236 @@ private enum DemucsInstaller {
     }
 }
 
+private enum LocalSeparatorInstaller {
+    static func install(into venvURL: URL) async throws {
+        if let uv = ProcessRunner.findExecutable("uv") {
+            try await installWithUV(uv, venvURL: venvURL)
+            return
+        }
+
+        guard let python = ProcessRunner.findExecutable("python3.12")
+            ?? ProcessRunner.findExecutable("python3.11")
+            ?? ProcessRunner.findExecutable("python3.10")
+            ?? ProcessRunner.findExecutable("python3") else {
+            throw AppProcessError.failed("Could not find uv or Python 3.10+ on PATH.")
+        }
+
+        try await ProcessRunner.run(python, arguments: ["-m", "venv", venvURL.path])
+        let venvPython = venvURL.appendingPathComponent("bin/python")
+        try await ProcessRunner.run(venvPython, arguments: ["-m", "pip", "install", "--upgrade", "pip"])
+        try await ProcessRunner.run(venvPython, arguments: ["-m", "pip", "install", "--upgrade", "mlx-audio-separator", "torch"])
+        try await ProcessRunner.run(venvPython, arguments: ["-m", "mlx_audio_separator", "--help"])
+    }
+
+    private static func installWithUV(_ uv: URL, venvURL: URL) async throws {
+        let pythonVersions = ["3.12", "3.11", "3.10", "3.14"]
+        var lastError: Error?
+
+        for pythonVersion in pythonVersions {
+            do {
+                try await ProcessRunner.run(uv, arguments: ["venv", "--allow-existing", "--python", pythonVersion, venvURL.path])
+                lastError = nil
+                break
+            } catch {
+                lastError = error
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+
+        let venvPython = venvURL.appendingPathComponent("bin/python")
+        try await ProcessRunner.run(uv, arguments: ["pip", "install", "--python", venvPython.path, "--upgrade", "mlx-audio-separator", "torch"])
+        try await ProcessRunner.run(venvPython, arguments: ["-m", "mlx_audio_separator", "--help"])
+    }
+}
+
+private enum MVSepClient {
+    static func extractDigitalPiano(
+        input: URL,
+        apiToken: String,
+        outputDirectory: URL,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> URL {
+        let hash = try await createDigitalPianoJob(input: input, apiToken: apiToken)
+        progress("MVSep queued: \(hash)")
+        return try await waitForResult(hash: hash, outputDirectory: outputDirectory, progress: progress)
+    }
+
+    private static func createDigitalPianoJob(input: URL, apiToken: String) async throws -> String {
+        let spec = MVSepSeparationRequest.digitalPiano(apiToken: apiToken)
+        let boundary = "Transcribee-\(UUID().uuidString)"
+        var request = URLRequest(url: spec.endpoint)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        let body = try multipartBody(
+            fields: spec.formFields,
+            fileField: "audiofile",
+            fileURL: input,
+            boundary: boundary
+        )
+
+        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        try validate(response: response, data: data)
+
+        let createResponse = try JSONDecoder().decode(CreateResponse.self, from: data)
+        guard createResponse.success, let hash = createResponse.data?.hash, !hash.isEmpty else {
+            throw AppProcessError.failed(createResponse.message ?? createResponse.data?.message ?? "MVSep did not return a job hash.")
+        }
+
+        return hash
+    }
+
+    private static func waitForResult(
+        hash: String,
+        outputDirectory: URL,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> URL {
+        for _ in 0..<90 {
+            let result = try await getResult(hash: hash)
+            let status = result.status ?? "unknown"
+
+            if status == "done", let files = result.data?.files, !files.isEmpty {
+                return try await downloadBestStem(from: files, outputDirectory: outputDirectory)
+            }
+
+            if status == "failed" || status == "error" {
+                throw AppProcessError.failed(result.data?.message ?? "MVSep job failed.")
+            }
+
+            if let queueCount = result.data?.queueCount, let currentOrder = result.data?.currentOrder {
+                progress("MVSep \(status): \(currentOrder)/\(queueCount)")
+            } else {
+                progress("MVSep \(status)...")
+            }
+
+            try await Task.sleep(nanoseconds: 10_000_000_000)
+        }
+
+        throw AppProcessError.failed("MVSep timed out before returning a digital piano stem.")
+    }
+
+    private static func getResult(hash: String) async throws -> ResultResponse {
+        var components = URLComponents(string: "https://mvsep.com/api/separation/get")!
+        components.queryItems = [URLQueryItem(name: "hash", value: hash)]
+
+        guard let url = components.url else {
+            throw AppProcessError.failed("Could not build MVSep result URL.")
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try validate(response: response, data: data)
+        return try JSONDecoder().decode(ResultResponse.self, from: data)
+    }
+
+    private static func downloadBestStem(from files: [ResultFile], outputDirectory: URL) async throws -> URL {
+        let preferred = files.first { file in
+            let name = file.download.lowercased()
+            return name.contains("digital") || name.contains("piano") || name.contains("keys")
+        } ?? files[0]
+
+        guard let sourceURL = URL(string: preferred.url.replacingOccurrences(of: "\\/", with: "/")) else {
+            throw AppProcessError.failed("MVSep returned an invalid download URL.")
+        }
+
+        let (temporaryURL, response) = try await URLSession.shared.download(from: sourceURL)
+        try validate(response: response, data: Data())
+
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        let destination = outputDirectory.appendingPathComponent(preferred.download, isDirectory: false)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.moveItem(at: temporaryURL, to: destination)
+        return destination
+    }
+
+    private static func multipartBody(fields: [String: String], fileField: String, fileURL: URL, boundary: String) throws -> Data {
+        var body = Data()
+        let lineBreak = "\r\n"
+
+        for key in fields.keys.sorted() {
+            body.append("--\(boundary)\(lineBreak)")
+            body.append("Content-Disposition: form-data; name=\"\(key)\"\(lineBreak + lineBreak)")
+            body.append("\(fields[key] ?? "")\(lineBreak)")
+        }
+
+        let filename = fileURL.lastPathComponent
+        body.append("--\(boundary)\(lineBreak)")
+        body.append("Content-Disposition: form-data; name=\"\(fileField)\"; filename=\"\(filename)\"\(lineBreak)")
+        body.append("Content-Type: \(mimeType(for: fileURL))\(lineBreak + lineBreak)")
+        body.append(try Data(contentsOf: fileURL))
+        body.append(lineBreak)
+        body.append("--\(boundary)--\(lineBreak)")
+
+        return body
+    }
+
+    private static func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "mp3":
+            return "audio/mpeg"
+        case "flac":
+            return "audio/flac"
+        case "m4a":
+            return "audio/mp4"
+        case "aif", "aiff":
+            return "audio/aiff"
+        default:
+            return "audio/wav"
+        }
+    }
+
+    private static func validate(response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let detail = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            throw AppProcessError.failed(detail)
+        }
+    }
+
+    private struct CreateResponse: Decodable {
+        let success: Bool
+        let data: CreateData?
+        let message: String?
+    }
+
+    private struct CreateData: Decodable {
+        let hash: String?
+        let message: String?
+    }
+
+    private struct ResultResponse: Decodable {
+        let success: Bool
+        let status: String?
+        let data: ResultData?
+    }
+
+    private struct ResultData: Decodable {
+        let files: [ResultFile]?
+        let message: String?
+        let queueCount: Int?
+        let currentOrder: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case files
+            case message
+            case queueCount = "queue_count"
+            case currentOrder = "current_order"
+        }
+    }
+
+    private struct ResultFile: Decodable {
+        let url: String
+        let download: String
+    }
+}
+
 private enum AppProcessError: LocalizedError, Sendable {
     case failed(String)
 
@@ -929,6 +1825,7 @@ private enum ProcessRunner {
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
+            process.environment = environmentWithToolFallbacks()
             process.standardOutput = outputHandle
             process.standardError = errorHandle
 
@@ -951,10 +1848,29 @@ private enum ProcessRunner {
             return output
         }.value
     }
+
+    private static func environmentWithToolFallbacks() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let fallbackPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        var paths = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+
+        for fallbackPath in fallbackPaths where !paths.contains(fallbackPath) {
+            paths.append(fallbackPath)
+        }
+
+        environment["PATH"] = paths.joined(separator: ":")
+        return environment
+    }
 }
 
 private extension LoopRegion {
     func contains(_ time: Double) -> Bool {
         time >= start && time <= end
+    }
+}
+
+private extension Data {
+    mutating func append(_ string: String) {
+        append(Data(string.utf8))
     }
 }

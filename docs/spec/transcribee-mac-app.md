@@ -1,4 +1,4 @@
-# Transcribee Mac App
+# By Ear Mac App
 
 ## Goal
 
@@ -25,7 +25,7 @@ Ship a working minimalist macOS practice app for local audio files. Users can lo
 
 ## Approach
 
-Native SwiftUI + AVFoundation + local Demucs CLI — see `docs/design/transcribee-mac-app.md`.
+Native SwiftUI + AVFoundation + local MLX/Demucs CLI — see `docs/design/transcribee-mac-app.md`.
 
 ## Checkpoints
 
@@ -45,4 +45,4 @@ Native SwiftUI + AVFoundation + local Demucs CLI — see `docs/design/transcribe
 | Full-file decoding uses memory on long songs. | Medium | Accept for v1; waveform/key analysis can be optimized later. |
 | SwiftUI package app bundle lacks Xcode project niceties. | Low | Package manually into `.app` with Info.plist and ad-hoc signing. |
 
-## Change Log
+## Change log

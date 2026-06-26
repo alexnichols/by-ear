@@ -1,6 +1,8 @@
-# Transcribee
+# By Ear
 
-Minimal macOS practice app for loading local audio, isolating piano with local Demucs, slowing down without pitch drift, looping sections, detecting key, and transposing to a target key.
+Minimal macOS practice app for loading local audio, extracting keyboard stems, slowing down without pitch drift, looping sections, detecting key, and transposing to a target key.
+
+By Ear is local-first: source audio stays on your Mac unless you explicitly use the optional MVSep integration.
 
 ## Build
 
@@ -19,24 +21,28 @@ swift run Transcribee
 
 ```bash
 ./scripts/package-app.sh
-open dist/Transcribee.app
+open "dist/By Ear.app"
 ```
 
-## Piano Isolation
+## YouTube Audio
 
-The app uses local Demucs, not uploads. For the free local path:
+The app can open a YouTube link by using local `yt-dlp` and `ffmpeg`, converting the downloaded audio to MP3, and loading it into the practice view.
+
+## Stem Extraction
+
+The app prefers local `mlx-audio-separator` on Apple Silicon with `BS-Roformer-SW.ckpt`, then falls back to local Demucs if MLX is unavailable. Install the local dependencies with:
 
 ```bash
 ./scripts/install-demucs.sh
 ```
 
-The app looks first for `~/Library/Application Support/Transcribee/demucs-venv/bin/python`, then common `demucs` and `python3` locations. The installer adds `demucs` plus `torchcodec`, which current `torchaudio` needs for WAV output. It runs:
+The local MLX path runs:
 
 ```bash
-python -m demucs -n htdemucs_6s --two-stems piano --float32 --segment 7
+mlx-audio-separator <audio> -m BS-Roformer-SW.ckpt --single_stem Piano --output_format WAV
 ```
 
-Demucs' own docs flag the piano model as experimental, so expect some bleed on dense mixes.
+The optional MVSep Digital Piano button uploads to MVSep with a user-provided API token and uses separation type `79`.
 
 ## Shortcuts
 

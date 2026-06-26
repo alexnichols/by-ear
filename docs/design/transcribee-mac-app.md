@@ -1,8 +1,8 @@
-# Transcribee Mac App
+# By Ear Mac App
 
 ## Problem
 
-Musicians need a private desktop practice tool that accepts local audio, isolates piano when possible, slows passages without pitch drift, loops exact regions, and transposes the recording into a chosen key.
+Musicians need a private desktop practice tool that accepts local audio or YouTube audio, isolates piano when possible, slows passages without pitch drift, loops exact regions, and transposes the recording into a chosen key.
 
 ```mermaid
 flowchart LR

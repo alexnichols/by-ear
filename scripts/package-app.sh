@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/dist/Transcribee.app"
+APP_NAME="By Ear"
+EXECUTABLE_NAME="Transcribee"
+APP="$ROOT/dist/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
@@ -12,7 +14,11 @@ swift build -c release --product Transcribee
 
 mkdir -p "$MACOS"
 mkdir -p "$RESOURCES"
-cp "$ROOT/.build/release/Transcribee" "$MACOS/Transcribee"
+cp "$ROOT/.build/release/Transcribee" "$MACOS/$EXECUTABLE_NAME"
+
+if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
+    cp "$ROOT/Resources/AppIcon.icns" "$RESOURCES/AppIcon.icns"
+fi
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -22,15 +28,17 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Transcribee</string>
+    <string>By Ear</string>
     <key>CFBundleExecutable</key>
     <string>Transcribee</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.transcribee.mac</string>
+    <string>dev.byear.mac</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Transcribee</string>
+    <string>By Ear</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -73,4 +81,3 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 echo "$APP"
-
