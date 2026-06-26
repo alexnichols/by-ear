@@ -198,11 +198,15 @@ func testBuildsYTDLPCommandForYouTubeMP3Download() {
 
 func testPracticeSurfaceCopyUsesPlainMusicianLanguage() {
     let detected = MusicalKey(root: .c, mode: .major, confidence: 0.9)
+    let minor = MusicalKey(root: .a, mode: .minor, confidence: 0.9)
 
     expect(PracticeSurfaceCopy.speedText(0.753) == "0.75x", "speed text rounds plainly")
     expect(PracticeSurfaceCopy.keyText(detectedKey: nil, targetRoot: nil) == "Key: Unknown", "unknown key text")
-    expect(PracticeSurfaceCopy.keyText(detectedKey: detected, targetRoot: nil) == "Key: C", "detected key text")
-    expect(PracticeSurfaceCopy.keyText(detectedKey: detected, targetRoot: .bFlat) == "Key: C -> Bb", "target key text")
+    expect(PracticeSurfaceCopy.keyText(detectedKey: detected, targetRoot: nil) == "Key: C major", "detected key text")
+    expect(PracticeSurfaceCopy.keyText(detectedKey: detected, targetRoot: .bFlat) == "Key: C major -> Bb major", "target major key text")
+    expect(PracticeSurfaceCopy.keyText(detectedKey: minor, targetRoot: .bFlat) == "Key: A minor -> Bb minor", "target minor key text")
+    expect(PracticeSurfaceCopy.targetKeyText(root: .bFlat, detectedKey: nil) == "Bb", "unknown mode target label")
+    expect(PracticeSurfaceCopy.targetKeyText(root: .bFlat, detectedKey: minor) == "Bb minor", "minor mode target label")
     expect(PracticeSurfaceCopy.loopText(nil) == "Loop", "disabled loop text is minimal")
     expect(PracticeSurfaceCopy.loopText(LoopRegion(start: 12, end: 36, isEnabled: true)) == "Loop 0:12-0:36", "enabled loop text is short")
 }

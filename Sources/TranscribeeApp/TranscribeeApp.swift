@@ -368,7 +368,8 @@ private struct ContentView: View {
             Picker("Change to", selection: Binding(get: { model.targetRoot }, set: { model.setTargetRoot($0) })) {
                 Text("Original").tag(PitchClass?.none)
                 ForEach(PitchClass.allCases) { pitchClass in
-                    Text(pitchClass.displayName).tag(PitchClass?.some(pitchClass))
+                    Text(PracticeSurfaceCopy.targetKeyText(root: pitchClass, detectedKey: model.detectedKey))
+                        .tag(PitchClass?.some(pitchClass))
                 }
             }
             .pickerStyle(.menu)

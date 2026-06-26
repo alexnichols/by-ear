@@ -11,10 +11,18 @@ public enum PracticeSurfaceCopy {
         }
 
         guard let targetRoot else {
-            return "Key: \(detectedKey.root.displayName)"
+            return "Key: \(detectedKey.displayName)"
         }
 
-        return "Key: \(detectedKey.root.displayName) -> \(targetRoot.displayName)"
+        return "Key: \(detectedKey.displayName) -> \(targetKeyText(root: targetRoot, detectedKey: detectedKey))"
+    }
+
+    public static func targetKeyText(root: PitchClass, detectedKey: MusicalKey?) -> String {
+        guard let mode = detectedKey?.mode else {
+            return root.displayName
+        }
+
+        return "\(root.displayName) \(mode.displayName)"
     }
 
     public static func loopText(_ loopRegion: LoopRegion?) -> String {
