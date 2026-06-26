@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+tmp/
+.worktrees/
+separated/
+*.xcuserdata/
+*.swp
+
